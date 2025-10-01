@@ -14,10 +14,10 @@ Proxy para NASA NeoWS com CORS, cache e **avaliação + mitigações** (heuríst
 
 ### ✅ Testes rápidos
 
-- Saúde: `GET https://SEU_SERVICO/health`  
-- Feed: `GET https://SEU_SERVICO/neo/feed?start_date=2025-09-30&end_date=2025-10-01`  
-- Detalhe: `GET https://SEU_SERVICO/neo/3726710`  
-- Browse: `GET https://SEU_SERVICO/neo/browse?page=0&size=10`
+- Saúde: `GET https://neo-api-proxy.onrender.com/health`  
+- Feed: `GET https://neo-api-proxy.onrender.com/neo/feed?start_date=2025-09-30&end_date=2025-10-01`  
+- Detalhe: `GET https://neo-api-proxy.onrender.com/neo/3726710`  
+- Browse: `GET https://neo-api-proxy.onrender.com/neo/browse?page=0&size=10`
 
 ---
 
@@ -26,7 +26,7 @@ Proxy para NASA NeoWS com CORS, cache e **avaliação + mitigações** (heuríst
 No seu HTML/JS:
 ```html
 <script>
-  const API_BASE = "https://SEU_SERVICO"; // ex.: https://neo-proxy.onrender.com
+  const API_BASE = "https://neo-api-proxy.onrender.com";
 
   async function getFeed(start, end) {
     const u = new URL(API_BASE + "/neo/feed");
