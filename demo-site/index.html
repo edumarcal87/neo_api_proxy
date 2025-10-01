@@ -3,59 +3,59 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>NEO Demo - via Proxy</title>
+  <title>NEO Mitigations Demo</title>
   <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; max-width: 900px; margin: 40px auto; padding: 0 16px; }
-    header { display: flex; align-items: center; gap: 8px; }
-    input, button { padding: 8px 12px; }
-    pre { background: #111; color: #0f0; padding: 12px; overflow: auto; border-radius: 8px; }
-    .row { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
-    label { font-weight: 600; }
+    :root{ --bg:#0b1020; --card:#131b34; --text:#e7ecff; --muted:#9bb0ff; --accent:#7aa2ff; }
+    body{ background:var(--bg); color:var(--text); font-family: ui-sans-serif, system-ui, Segoe UI, Roboto, sans-serif; margin:0; padding:24px; }
+    .wrap{ max-width: 1000px; margin: 0 auto; }
+    .row{ display:flex; gap:8px; flex-wrap:wrap; margin:8px 0 16px; }
+    input,button{ padding:10px 12px; border-radius:10px; border:1px solid #2a396b; background:#0f1833; color:var(--text); }
+    button{ cursor:pointer; }
+    .card{ background:var(--card); border:1px solid #22305f; padding:16px; border-radius:16px; margin:12px 0; }
+    .pill{ display:inline-block; padding:4px 10px; border-radius:999px; font-size:12px; border:1px solid #2a396b; background:#0f1833; }
+    .grid{ display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:12px; }
+    pre{ background:#0a0f22; padding:12px; border-radius:12px; overflow:auto; }
+    .level-LOW{ color:#7ae27a; }
+    .level-MODERATE{ color:#ffd166; }
+    .level-HIGH{ color:#ff7b7b; }
+    .level-CRITICAL{ color:#ff4d4d; font-weight:700; }
   </style>
 </head>
 <body>
-  <header>
-    <h1>NEO Demo (NASA NeoWS via Proxy)</h1>
-  </header>
-
-  <section>
-    <label>Proxy Base URL</label>
-    <div class="row">
-      <input id="apiBase" style="min-width:420px" placeholder="https://seu-servico.onrender.com" />
-      <button onclick="ping()">Test /health</button>
+  <div class="wrap">
+    <h1>NEO Mitigations Demo</h1>
+    <div class="card">
+      <div class="row">
+        <input id="api" placeholder="https://seu-servico.onrender.com" style="min-width:380px" />
+        <button onclick="ping()">/health</button>
+      </div>
+      <pre id="log">resultado aparece aqui…</pre>
     </div>
-    <pre id="out">Saída aparecerá aqui…</pre>
-  </section>
 
-  <section>
-    <h2>Feed</h2>
-    <div class="row">
-      <input id="start" placeholder="YYYY-MM-DD">
-      <input id="end" placeholder="YYYY-MM-DD (opcional)">
-      <button onclick="doFeed()">Buscar</button>
+    <div class="card">
+      <h2>Feed + Mitigações</h2>
+      <div class="row">
+        <input id="start" placeholder="YYYY-MM-DD">
+        <input id="end" placeholder="YYYY-MM-DD (opcional)">
+        <button onclick="feed()">Buscar</button>
+      </div>
+      <div id="feedOut"></div>
     </div>
-  </section>
 
-  <section>
-    <h2>Detalhe por NEO ID</h2>
-    <div class="row">
-      <input id="neoId" placeholder="Ex.: 3726710">
-      <button onclick="doDetail()">Buscar</button>
+    <div class="card">
+      <h2>Detalhe + Mitigações por NEO ID</h2>
+      <div class="row">
+        <input id="neoId" placeholder="Ex.: 3726710">
+        <button onclick="detail()">Buscar</button>
+      </div>
+      <div id="detailOut"></div>
     </div>
-  </section>
-
-  <section>
-    <h2>Browse</h2>
-    <div class="row">
-      <input id="page" type="number" value="0">
-      <input id="size" type="number" value="10">
-      <button onclick="doBrowse()">Buscar</button>
-    </div>
-  </section>
+  </div>
 
   <script>
-    function out(txt){ document.getElementById('out').textContent = typeof txt === 'string' ? txt : JSON.stringify(txt, null, 2); }
-    function base(){ return document.getElementById('apiBase').value.trim(); }
+    const $ = s => document.querySelector(s);
+    const out = (x) => $('#log').textContent = typeof x === 'string' ? x : JSON.stringify(x, null, 2);
+    const base = () => $('#api').value.trim();
 
     async function ping(){
       try{
@@ -64,35 +64,86 @@
       }catch(e){ out('Erro: ' + e); }
     }
 
-    async function doFeed(){
-      const s = document.getElementById('start').value.trim();
-      const e = document.getElementById('end').value.trim();
+    function assessmentCard(a){
+      if(!a) return '';
+      const m = a.metrics || {};
+      return `
+        <div class="grid">
+          <div class="card">
+            <div><span class="pill">Threat</span></div>
+            <h3 class="level-${a.threat_level}">${a.threat_level}</h3>
+            <p style="color:#9bb0ff">${a.disclaimer}</p>
+          </div>
+          <div class="card">
+            <div><span class="pill">Metrics</span></div>
+            <ul>
+              <li><b>Diameter (km):</b> ${m.diameter_km ?? 'n/a'}</li>
+              <li><b>Hazardous (NASA):</b> ${m.is_hazardous}</li>
+              <li><b>Min miss (km):</b> ${m.min_miss_km ?? 'n/a'}</li>
+              <li><b>Days to soonest:</b> ${m.days_to_soonest_approach ?? 'n/a'}</li>
+              <li><b>Soonest UTC:</b> ${m.soonest_approach_utc ?? 'n/a'}</li>
+              <li><b>Max rel vel (km/s):</b> ${m.max_rel_vel_kms ?? 'n/a'}</li>
+              <li><b>Abs mag H:</b> ${m.absolute_magnitude_h ?? 'n/a'}</li>
+            </ul>
+          </div>
+          <div class="card">
+            <div><span class="pill">Mitigations</span></div>
+            ${(a.mitigations||[]).map(m => `
+              <div style="margin:8px 0">
+                <div><b>${m.title}</b> — <span class="pill">${m.when}</span></div>
+                <div style="color:#9bb0ff">${m.rationale}</div>
+                <ul>${(m.actions||[]).map(x=>`<li>${x}</li>`).join('')}</ul>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `;
+    }
+
+    async function feed(){
+      const s = $('#start').value.trim();
+      const e = $('#end').value.trim();
       let url = new URL(base() + '/neo/feed');
       url.searchParams.set('start_date', s);
-      if(e) url.searchParams.set('end_date', e);
+      if (e) url.searchParams.set('end_date', e);
+      url.searchParams.set('mitigations', 'true');
       try{
         const r = await fetch(url);
-        out(await r.json());
+        const data = await r.json();
+        const neosByDay = data.near_earth_objects || {};
+        let html = '';
+        Object.keys(neosByDay).sort().forEach(day => {
+          html += `<h3>${day}</h3>`;
+          for(const neo of neosByDay[day]){
+            html += `<div class="card">
+              <div class="row" style="justify-content:space-between;">
+                <div><b>${neo.name}</b> <span class="pill">ID ${neo.id}</span></div>
+                <a href="${neo.nasa_jpl_url}" target="_blank">JPL</a>
+              </div>
+              ${assessmentCard(neo.assessment)}
+            </div>`;
+          }
+        });
+        $('#feedOut').innerHTML = html || '<em>sem resultados</em>';
       }catch(err){ out('Erro: ' + err); }
     }
 
-    async function doDetail(){
-      const id = document.getElementById('neoId').value.trim();
-      try{
-        const r = await fetch(base() + '/neo/' + id);
-        out(await r.json());
-      }catch(err){ out('Erro: ' + err); }
-    }
-
-    async function doBrowse(){
-      const p = document.getElementById('page').value.trim() || '0';
-      const s = document.getElementById('size').value.trim() || '10';
-      let url = new URL(base() + '/neo/browse');
-      url.searchParams.set('page', p);
-      url.searchParams.set('size', s);
+    async function detail(){
+      const id = $('#neoId').value.trim();
+      let url = new URL(base() + '/neo/' + id);
+      url.searchParams.set('mitigations', 'true');
       try{
         const r = await fetch(url);
-        out(await r.json());
+        const neo = await r.json();
+        const card = `
+          <div class="card">
+            <div class="row" style="justify-content:space-between;">
+              <div><b>${neo.name}</b> <span class="pill">ID ${neo.id}</span></div>
+              <a href="${neo.nasa_jpl_url}" target="_blank">JPL</a>
+            </div>
+            ${assessmentCard(neo.assessment)}
+          </div>`;
+        $('#detailOut').innerHTML = card;
       }catch(err){ out('Erro: ' + err); }
     }
   </script>
