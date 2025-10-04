@@ -10,7 +10,7 @@ Serviço **FastAPI** que expõe e enriquece dados da **NASA NeoWS** e adiciona c
 
 > ⚠️ **Aviso**: Projeto **educacional**. As avaliações/estimativas são de 1ª ordem (screening) e **não** substituem análises oficiais.
 
-**URL BASE DO SERVIÇO: ** https://neo-api-proxy.onrender.com
+URL BASE DO SERVIÇO: https://neo-api-proxy.onrender.com
 ---
 
 ## Sumário
