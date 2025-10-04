@@ -239,9 +239,7 @@ def _enrich_cache_set(key, data, ttl=ENRICH_TTL):
 
 def _num(x):
     """
-    Extrai o primeiro float de x.
-    Aceita dicts {"value": ...}, strings com incerteza ("2.9 ± 0.5 g/cm^3")
-    e notação científica. Retorna None se não achar número.
+    Extrai o primeiro float de x (dict {"value":...} ou string p/ "2.9 ± 0.5 g/cm^3").
     """
     try:
         if isinstance(x, dict):
@@ -255,6 +253,7 @@ def _num(x):
         return float(m.group(0)) if m else None
     except Exception:
         return None
+
 
 # def _num(x):
 #     """
@@ -287,12 +286,31 @@ def ssod_quaero(query: str):
     except Exception:
         return None
 
+# def ssod_card(ssod_id: str):
+#     try:
+#         r = requests.get(f"{SSOD_BASE}/ssocard/{ssod_id}", timeout=30)
+#         if r.status_code != 200:
+#             return None
+#         return r.json()
+#     except Exception:
+#         return None
+
 def ssod_card(ssod_id: str):
     try:
         r = requests.get(f"{SSOD_BASE}/ssocard/{ssod_id}", timeout=30)
         if r.status_code != 200:
             return None
-        return r.json()
+        js = r.json()
+        # Se vier LISTA, pegue o primeiro dict "útil"
+        if isinstance(js, list):
+            for cand in js:
+                if isinstance(cand, dict):
+                    return cand
+            return None
+        # Se vier DICT, ok
+        if isinstance(js, dict):
+            return js
+        return None
     except Exception:
         return None
 
@@ -353,10 +371,25 @@ def extract_taxonomy(card: dict):
 #     density = _num(phys.get("density") or phys.get("rho"))
 #     return {"diameter_km": diameter, "mass_kg": mass, "density_g_cm3": density}
 
+def extract_phys_from_sbdb(phys: dict):
+    if not isinstance(phys, dict):
+        return {}
+    diameter = _num(phys.get("diameter"))
+    mass = _num(phys.get("mass"))
+    if mass is None and phys.get("GM") is not None:
+        mass = _mass_from_GM(phys.get("GM"))
+    density = _num(phys.get("density") or phys.get("rho"))
+    return {"diameter_km": diameter, "mass_kg": mass, "density_g_cm3": density}
+
 def extract_phys_from_ssocard(card: dict):
-    if not card: return {}
+    if not isinstance(card, dict):
+        return {}
     p = card.get("parameters") or {}
+    if not isinstance(p, dict):
+        p = {}
     phys = p.get("physical") or {}
+    if not isinstance(phys, dict):
+        phys = {}
     diameter = _num(phys.get("diameter") or phys.get("equivalent_diameter"))
     mass = _num(phys.get("mass"))
     if mass is None and phys.get("GM") is not None:
@@ -365,19 +398,13 @@ def extract_phys_from_ssocard(card: dict):
     taxo = extract_taxonomy(card)
     refs = card.get("references") or []
     bib = None
-    for ref in refs or []:
-        if isinstance(ref, dict) and ref.get("bibcode"):
-            bib = ref["bibcode"]; break
+    if isinstance(refs, list):
+        for ref in refs:
+            if isinstance(ref, dict) and ref.get("bibcode"):
+                bib = ref["bibcode"]
+                break
     return {"diameter_km": diameter, "mass_kg": mass, "density_g_cm3": density, "taxonomy": taxo, "bibcode": bib}
 
-def extract_phys_from_sbdb(phys: dict):
-    if not phys: return {}
-    diameter = _num(phys.get("diameter"))
-    mass = _num(phys.get("mass"))
-    if mass is None and phys.get("GM") is not None:
-        mass = _mass_from_GM(phys.get("GM"))
-    density = _num(phys.get("density") or phys.get("rho"))
-    return {"diameter_km": diameter, "mass_kg": mass, "density_g_cm3": density}
 
 # G_KM3_PER_KG_S2 = 6.67430e-20  # constante gravitacional em km^3/(kg*s^2)
 
@@ -387,13 +414,14 @@ def extract_phys_from_sbdb(phys: dict):
 #         return None
 #     return gm_val / G_KM3_PER_KG_S2  # kg
 
-G_KM3_PER_KG_S2 = 6.67430e-20  # G em km^3/(kg*s^2)
+G_KM3_PER_KG_S2 = 6.67430e-20  # km^3/(kg*s^2)
 
 def _mass_from_GM(gm):
     gm_val = _num(gm)
     if gm_val is None:
         return None
     return gm_val / G_KM3_PER_KG_S2  # kg
+
 
 
 
@@ -467,48 +495,43 @@ def _label_variants(label: str, fallback: dict = None):
 #         _enrich_cache_set(ck, result)
 #     return result
 
-def enrich_by_label(label: str, neo_context: dict = None):
+def enrich_by_label(label: str):
     ck = ("enrich", label)
     cached = _enrich_cache_get(ck)
     if cached is not None:
         return cached
 
-    result = {"source": None, "mass_kg": None, "density_g_cm3": None, "diameter_km": None, "taxonomy": None, "bibcode": None, "note": None}
+    result = {"source": None, "mass_kg": None, "density_g_cm3": None,
+              "diameter_km": None, "taxonomy": None, "bibcode": None, "note": None}
 
-    # tente várias strings
-    tried = set()
-    for cand in _label_variants(label, neo_context or {}):
-        if cand in tried: 
-            continue
-        tried.add(cand)
-
-        # 1) SsODNet
-        sid = ssod_quaero(cand)
+    # 1) SsODNet (tenta resolver e ler o card)
+    try:
+        sid = ssod_quaero(label)
         if sid:
-            card = ssod_card(sid)
+            card = ssod_card(sid)  # agora já vem normalizado para dict
             ssop = extract_phys_from_ssocard(card)
             if any([ssop.get("mass_kg"), ssop.get("density_g_cm3"), ssop.get("diameter_km")]):
                 result.update(ssop)
                 result["source"] = "ssodnet"
-                break  # já resolveu
+    except Exception:
+        pass
 
-        # 2) SBDB
-        sbp = extract_phys_from_sbdb(sbdb_phys(cand))
-        if any([sbp.get("mass_kg"), sbp.get("density_g_cm3"), sbp.get("diameter_km")]):
-            for k, v in sbp.items():
+    # 2) SBDB fallback
+    try:
+        if result["mass_kg"] is None or result["density_g_cm3"] is None or result["diameter_km"] is None:
+            sbp = extract_phys_from_sbdb(sbdb_phys(label))
+            for k, v in (sbp or {}).items():
                 if result.get(k) is None and v is not None:
                     result[k] = v
-            if not result["source"]:
+            if any([result.get("mass_kg"), result.get("density_g_cm3"), result.get("diameter_km")]) and not result["source"]:
                 result["source"] = "sbdb"
-            break
+    except Exception:
+        pass
 
-    # 3) Estimar se ainda faltar massa
+    # 3) Estimar massa se ainda faltou
     if result["mass_kg"] is None:
-        rho = result["density_g_cm3"]
-        if rho is None:
-            taxo_key = str(result.get("taxonomy") or "").upper()
-            rho = TAXO_RHO.get(taxo_key)
-            # rho = TAXO_RHO.get((result.get("taxonomy") or "").upper())
+        taxo_key = str(result.get("taxonomy") or "").upper()
+        rho = result.get("density_g_cm3") or TAXO_RHO.get(taxo_key)
         est = estimate_mass_from_diameter_density(result.get("diameter_km"), rho)
         if est is not None:
             result["mass_kg"] = est
@@ -516,10 +539,11 @@ def enrich_by_label(label: str, neo_context: dict = None):
             if result["source"] is None:
                 result["source"] = "estimate"
 
-    # cacheia só se existir algum dado útil
+    # cache só se houver algo útil
     if any([result.get("mass_kg"), result.get("density_g_cm3"), result.get("diameter_km")]):
         _enrich_cache_set(ck, result)
     return result
+
 
 
 app = FastAPI(title="NeoWS Python Proxy — Advanced", version="2.0.0", docs_url="/")
