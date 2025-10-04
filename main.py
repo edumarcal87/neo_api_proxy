@@ -28,6 +28,81 @@ G_EARTH = 9.80665  # m/s^2
 JOULES_PER_KT_TNT = 4.184e12  # 1 kt TNT
 JOULES_PER_MT_TNT = 4.184e15  # 1 Mt TNT
 
+# --- ocean/tsunami defaults ---
+OCEAN_DEFAULT_DEPTH_M = 4000.0     # profundidade típica oceano aberto
+COAST_DEFAULT_DEPTH_M = 50.0       # profundidade média próxima à costa
+NEARFIELD_RADIUS_FACTOR = 2.0      # r0 ~ 2 × (D_tc/2)
+INITIAL_WAVE_ALPHA = 0.10          # A0 ~ 0.10 × D_tc (heurística)
+DISPERSION_LENGTH_KM = 1000.0      # escala de atenuação por dispersão (km)
+RUNUP_FACTOR = 2.0                 # run-up ~ 2 × amplitude costeira (bem 1ª ordem)
+
+# --- sísmico ---
+SEISMIC_COUPLING_DEFAULT = 1e-4    # fração da energia cinética que vira energia sísmica
+
+def _parse_csv_floats(s: str | None) -> list[float]:
+    if not s: return []
+    out = []
+    for tok in s.split(","):
+        try:
+            out.append(float(tok.strip()))
+        except Exception:
+            pass
+    return out
+
+def _ocean_wavefield_from_crater(
+    Dtc_m: float | None,
+    water_depth_m: float,
+    coast_depth_m: float,
+    distances_km: list[float],
+    nearfield_radius_factor: float = NEARFIELD_RADIUS_FACTOR,
+    alpha_init: float = INITIAL_WAVE_ALPHA,
+    Ld_km: float = DISPERSION_LENGTH_KM,
+    runup_factor: float = RUNUP_FACTOR,
+):
+    """
+    Estimativa 1ª ordem de tsunami por impacto:
+    - A0 ≈ alpha_init × D_tc
+    - r0 ≈ nearfield_radius_factor × (D_tc/2)
+    - A_deep(R) ≈ A0 × (r0/R) × exp(-R/Ld)             (espalhamento + dispersão)
+    - A_coast ≈ A_deep × ( (h_deep / h_coast) ** 0.25 ) (shoaling ~ Green's law)
+    - Run-up ≈ runup_factor × A_coast
+    """
+    if not Dtc_m or Dtc_m <= 0:
+        return None
+
+    r0_m = nearfield_radius_factor * (Dtc_m / 2.0)
+    A0_m = alpha_init * Dtc_m
+    results = []
+    for R_km in (distances_km or [50.0, 100.0, 200.0, 500.0]):
+        R = max(R_km * 1000.0, r0_m)
+        A_deep = A0_m * (r0_m / R) * math.exp(- (R_km / max(Ld_km, 1.0)))
+        shoal = (water_depth_m / max(coast_depth_m, 1.0)) ** 0.25
+        A_coast = A_deep * shoal
+        runup = runup_factor * A_coast
+        results.append({
+            "distance_km": R_km,
+            "deep_water_amp_m": A_deep,
+            "coastal_amp_m": A_coast,
+            "runup_m": runup
+        })
+    return {
+        "initial_amp_m": A0_m,
+        "nearfield_radius_km": r0_m / 1000.0,
+        "far_field": results
+    }
+
+def _seismic_from_energy(E_k_joules: float | None, coupling: float = SEISMIC_COUPLING_DEFAULT):
+    """
+    Estima magnitude momento M_w a partir da energia sísmica:
+    log10(E_s [J]) ≈ 4.8 + 1.5 M_w  →  M_w = (log10(E_s) - 4.8) / 1.5
+    com E_s = coupling × E_kinetic. (Relação clássica Gutenberg–Richter/Kanamori; 1ª ordem.)
+    """
+    if not E_k_joules or E_k_joules <= 0:
+        return {"Mw": None, "E_s_j": None, "coupling": coupling}
+    E_s = coupling * E_k_joules
+    Mw = (math.log10(E_s) - 4.8) / 1.5
+    return {"Mw": Mw, "E_s_j": E_s, "coupling": coupling}
+
 def _to_kg_m3_from_g_cm3(x):
     v = _num(x)
     return None if v is None else v * 1000.0
@@ -136,30 +211,54 @@ def estimate_impact_effects(neo: dict,
                             target: str,
                             override_diameter_km: float | None = None,
                             override_density_g_cm3: float | None = None,
-                            override_mass_kg: float | None = None):
-    # parâmetros resolvidos
-    v_kms = _resolve_velocity_kms(neo, velocity_kms)
-    v_ms = v_kms * 1000.0
+                            override_mass_kg: float | None = None,
+                            # --- NOVOS ---
+                            water_depth_m: float | None = None,
+                            coast_depth_m: float = COAST_DEFAULT_DEPTH_M,
+                            coast_r_km_csv: str | None = None,
+                            runup_factor: float = RUNUP_FACTOR,
+                            dispersion_length_km: float = DISPERSION_LENGTH_KM,
+                            seismic_coupling: float = SEISMIC_COUPLING_DEFAULT):
+    # (código existente de resolução de v_ms, d_km, rho_g_cm3, m_kg ...)
+    v_kms = _resolve_velocity_kms(neo, velocity_kms); v_ms = v_kms * 1000.0
     d_km = _resolve_diameter_km(neo, enr, override_diameter_km)
     rho_g_cm3 = override_density_g_cm3 if override_density_g_cm3 is not None else (enr or {}).get("density_g_cm3", DEFAULT_RHO_G_CM3)
     m_kg = _resolve_mass_kg(enr, override_mass_kg, d_km, rho_g_cm3)
 
-    # densidades p/ cratera (projetil & alvo)
-    rho_i = _to_kg_m3_from_g_cm3(rho_g_cm3) or 2500.0
-    rho_t = TARGET_RHO.get((target or "rock").lower(), 2700.0)
-
-    # energia e TNT
+    # energia/momento
     E_j = 0.5 * float(m_kg) * (v_ms ** 2) if (m_kg is not None) else None
     tnt_kt = (E_j / JOULES_PER_KT_TNT) if E_j is not None else None
     tnt_Mt = (E_j / JOULES_PER_MT_TNT) if E_j is not None else None
     p_Ns = (float(m_kg) * v_ms) if m_kg is not None else None
 
-    # Cratera (transiente e final)
+    # PI-scaling já existente:
     L_m = d_km * 1000.0 if d_km is not None else None
-    Dtc_m = _crater_transient_diameter_m(L_m, v_ms, rho_i, rho_t, angle_deg)
+    Dtc_m = _crater_transient_diameter_m(L_m, v_ms, _to_kg_m3_from_g_cm3(rho_g_cm3) or 2500.0,
+                                         TARGET_RHO.get((target or "rock").lower(), 2700.0),
+                                         angle_deg)
     Dfr_km = _crater_final_from_transient_km(Dtc_m)
     depth_km = _crater_depth_km(Dfr_km)
     crater_type = "simple" if (Dfr_km is not None and Dfr_km < 3.2) else ("complex" if Dfr_km is not None else None)
+
+    # --- NOVO: oceano/tsunami, só se alvo 'water' (ou se usuário informar profundidade) ---
+    ocean = None
+    tgt_lower = (target or "rock").lower()
+    if tgt_lower in ("water", "ice") or (water_depth_m is not None):
+        wdep = float(water_depth_m or OCEAN_DEFAULT_DEPTH_M)
+        rlist = _parse_csv_floats(coast_r_km_csv) or [50.0, 100.0, 200.0, 500.0]
+        ocean = _ocean_wavefield_from_crater(
+            Dtc_m=Dtc_m,
+            water_depth_m=wdep,
+            coast_depth_m=coast_depth_m or COAST_DEFAULT_DEPTH_M,
+            distances_km=rlist,
+            nearfield_radius_factor=NEARFIELD_RADIUS_FACTOR,
+            alpha_init=INITIAL_WAVE_ALPHA,
+            Ld_km=dispersion_length_km or DISPERSION_LENGTH_KM,
+            runup_factor=runup_factor or RUNUP_FACTOR,
+        )
+
+    # --- NOVO: sísmico (Mw a partir de E cinética × acoplamento) ---
+    seismic = _seismic_from_energy(E_j, coupling=seismic_coupling or SEISMIC_COUPLING_DEFAULT)
 
     return {
         "inputs_resolved": {
@@ -183,11 +282,75 @@ def estimate_impact_effects(neo: dict,
             "type": crater_type,
             "ratio_final_to_impactor": (Dfr_km / d_km) if (Dfr_km and d_km) else None
         },
+        "ocean": ocean,     # <- NOVO (quando aplicável)
+        "seismic": seismic, # <- NOVO
         "notes": [
-            "First-order scaling based on Collins–Melosh–Marcus (EIEP).",
-            "No atmospheric entry/airburst modelling here."
+            "First-order scaling (EIEP) for cratering.",
+            "Ocean: geometric spreading + dispersion + shoaling (very coarse).",
+            "Seismic Mw via energy coupling; highly uncertain."
         ]
     }
+
+
+# def estimate_impact_effects(neo: dict,
+#                             enr: dict | None,
+#                             velocity_kms: float | None,
+#                             angle_deg: float,
+#                             target: str,
+#                             override_diameter_km: float | None = None,
+#                             override_density_g_cm3: float | None = None,
+#                             override_mass_kg: float | None = None):
+#     # parâmetros resolvidos
+#     v_kms = _resolve_velocity_kms(neo, velocity_kms)
+#     v_ms = v_kms * 1000.0
+#     d_km = _resolve_diameter_km(neo, enr, override_diameter_km)
+#     rho_g_cm3 = override_density_g_cm3 if override_density_g_cm3 is not None else (enr or {}).get("density_g_cm3", DEFAULT_RHO_G_CM3)
+#     m_kg = _resolve_mass_kg(enr, override_mass_kg, d_km, rho_g_cm3)
+
+#     # densidades p/ cratera (projetil & alvo)
+#     rho_i = _to_kg_m3_from_g_cm3(rho_g_cm3) or 2500.0
+#     rho_t = TARGET_RHO.get((target or "rock").lower(), 2700.0)
+
+#     # energia e TNT
+#     E_j = 0.5 * float(m_kg) * (v_ms ** 2) if (m_kg is not None) else None
+#     tnt_kt = (E_j / JOULES_PER_KT_TNT) if E_j is not None else None
+#     tnt_Mt = (E_j / JOULES_PER_MT_TNT) if E_j is not None else None
+#     p_Ns = (float(m_kg) * v_ms) if m_kg is not None else None
+
+#     # Cratera (transiente e final)
+#     L_m = d_km * 1000.0 if d_km is not None else None
+#     Dtc_m = _crater_transient_diameter_m(L_m, v_ms, rho_i, rho_t, angle_deg)
+#     Dfr_km = _crater_final_from_transient_km(Dtc_m)
+#     depth_km = _crater_depth_km(Dfr_km)
+#     crater_type = "simple" if (Dfr_km is not None and Dfr_km < 3.2) else ("complex" if Dfr_km is not None else None)
+
+#     return {
+#         "inputs_resolved": {
+#             "diameter_km": d_km,
+#             "density_g_cm3": rho_g_cm3,
+#             "mass_kg": m_kg,
+#             "velocity_kms": v_kms,
+#             "angle_deg": angle_deg,
+#             "target": target,
+#         },
+#         "energy": {
+#             "kinetic_j": E_j,
+#             "tnt_kt": tnt_kt,
+#             "tnt_Mt": tnt_Mt,
+#             "momentum_Ns": p_Ns
+#         },
+#         "crater": {
+#             "transient_diameter_km": (Dtc_m / 1000.0) if Dtc_m is not None else None,
+#             "final_diameter_km": Dfr_km,
+#             "depth_km": depth_km,
+#             "type": crater_type,
+#             "ratio_final_to_impactor": (Dfr_km / d_km) if (Dfr_km and d_km) else None
+#         },
+#         "notes": [
+#             "First-order scaling based on Collins–Melosh–Marcus (EIEP).",
+#             "No atmospheric entry/airburst modelling here."
+#         ]
+#     }
 
 
 _cache: Dict[Any, Tuple[float, Any]] = {}
@@ -918,38 +1081,75 @@ def neo_enrich(neo_id: str):
             "detail": str(e)
         })
 
-
 @app.get("/neo/impact/{neo_id}")
 def neo_impact(
     neo_id: str,
-    velocity_kms: float | None = Query(None, description="Velocidade no impacto (km/s). Se ausente, usa métrica do NEO ou 20."),
-    angle_deg: float = Query(45.0, ge=1.0, le=90.0, description="Ângulo de impacto em graus (90=vertical)."),
+    velocity_kms: float | None = Query(None),
+    angle_deg: float = Query(45.0, ge=1.0, le=90.0),
     target: str = Query("rock", description="rock|sedimentary|crystalline|water|ice"),
-    enrich: bool = Query(True, description="Usa enrichment/estimativas anteriores como base"),
-    diameter_km: float | None = Query(None, description="Sobrescreve diâmetro do projetil (km)"),
-    density_g_cm3: float | None = Query(None, description="Sobrescreve densidade (g/cm^3)"),
-    mass_kg: float | None = Query(None, description="Sobrescreve massa (kg)")
+    enrich: bool = Query(True),
+    diameter_km: float | None = Query(None),
+    density_g_cm3: float | None = Query(None),
+    mass_kg: float | None = Query(None),
+    # --- NOVOS ---
+    water_depth_m: float | None = Query(None, description="Profundidade local (m) para impactos em água; padrão=4000."),
+    coast_depth_m: float = Query(COAST_DEFAULT_DEPTH_M, description="Profundidade média costeira (m)"),
+    coast_r_km: str | None = Query(None, description="Lista CSV de distâncias costeiras em km (ex: 50,100,200,500)"),
+    runup_factor: float = Query(RUNUP_FACTOR, description="Fator de run-up ≈ múltiplo da amplitude costeira"),
+    dispersion_length_km: float = Query(DISPERSION_LENGTH_KM, description="Escala de atenuação por dispersão (km)"),
+    seismic_coupling: float = Query(SEISMIC_COUPLING_DEFAULT, description="Fraç. de energia cinética → energia sísmica"),
 ):
-    try:
-        neo = _get(f"{NASA_API}/neo/{neo_id}", {"api_key": NASA_KEY})
-        label = neo.get("name") or neo.get("designation") or str(neo_id)
-        enr = None
-        if enrich:
-            try:
-                enr = enrich_by_label(label, neo_context=neo)
-            except Exception as e:
-                enr = None
-                neo["enrichment_error"] = str(e)
-
-        out = estimate_impact_effects(
-            neo, enr,
-            velocity_kms=velocity_kms,
-            angle_deg=angle_deg,
-            target=target,
-            override_diameter_km=diameter_km,
-            override_density_g_cm3=density_g_cm3,
-            override_mass_kg=mass_kg
-        )
-        return {"neo_id": neo_id, "label": label, "impact": out, "enrichment": enr if enrich else None}
+    ...
+    out = estimate_impact_effects(
+        neo, enr,
+        velocity_kms=velocity_kms,
+        angle_deg=angle_deg,
+        target=target,
+        override_diameter_km=diameter_km,
+        override_density_g_cm3=density_g_cm3,
+        override_mass_kg=mass_kg,
+        water_depth_m=water_depth_m,
+        coast_depth_m=coast_depth_m,
+        coast_r_km_csv=coast_r_km,
+        runup_factor=runup_factor,
+        dispersion_length_km=dispersion_length_km,
+        seismic_coupling=seismic_coupling
+    )
+    return {"neo_id": neo_id, "label": label, "impact": out, "enrichment": enr if enrich else None}
     except Exception as e:
         return JSONResponse(status_code=502, content={"error": "impact_estimate_failed", "detail": str(e)})
+
+# @app.get("/neo/impact/{neo_id}")
+# def neo_impact(
+#     neo_id: str,
+#     velocity_kms: float | None = Query(None, description="Velocidade no impacto (km/s). Se ausente, usa métrica do NEO ou 20."),
+#     angle_deg: float = Query(45.0, ge=1.0, le=90.0, description="Ângulo de impacto em graus (90=vertical)."),
+#     target: str = Query("rock", description="rock|sedimentary|crystalline|water|ice"),
+#     enrich: bool = Query(True, description="Usa enrichment/estimativas anteriores como base"),
+#     diameter_km: float | None = Query(None, description="Sobrescreve diâmetro do projetil (km)"),
+#     density_g_cm3: float | None = Query(None, description="Sobrescreve densidade (g/cm^3)"),
+#     mass_kg: float | None = Query(None, description="Sobrescreve massa (kg)")
+# ):
+#     try:
+#         neo = _get(f"{NASA_API}/neo/{neo_id}", {"api_key": NASA_KEY})
+#         label = neo.get("name") or neo.get("designation") or str(neo_id)
+#         enr = None
+#         if enrich:
+#             try:
+#                 enr = enrich_by_label(label, neo_context=neo)
+#             except Exception as e:
+#                 enr = None
+#                 neo["enrichment_error"] = str(e)
+
+#         out = estimate_impact_effects(
+#             neo, enr,
+#             velocity_kms=velocity_kms,
+#             angle_deg=angle_deg,
+#             target=target,
+#             override_diameter_km=diameter_km,
+#             override_density_g_cm3=density_g_cm3,
+#             override_mass_kg=mass_kg
+#         )
+#         return {"neo_id": neo_id, "label": label, "impact": out, "enrichment": enr if enrich else None}
+#     except Exception as e:
+#         return JSONResponse(status_code=502, content={"error": "impact_estimate_failed", "detail": str(e)})
