@@ -1,10 +1,12 @@
 import os, time, math
+import re  # <— ADICIONE
 import requests
 from datetime import datetime, timezone
 from typing import Optional, Tuple, Dict, Any, List
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 NASA_API = "https://api.nasa.gov/neo/rest/v1"
 NASA_KEY = os.getenv("NASA_API_KEY", "9cL9fpjqbydKR16ZMCJ1znPDTf9xN6uMOyvHcpFJ")
@@ -220,7 +222,7 @@ def build_assessment(neo: dict) -> dict:
     }
 
 # -------- Enrichment (mass/density) --------
-ENRICH_TTL = int(os.getenv("ENRICH_TTL", "21600"))  # 6h
+ENRICH_TTL = int(os.getenv("ENRICH_TTL", "30"))  # 6h
 _enrich_cache: Dict[str, Tuple[float, Any]] = {}
 
 def _enrich_cache_get(key):
@@ -235,11 +237,10 @@ def _enrich_cache_get(key):
 def _enrich_cache_set(key, data, ttl=ENRICH_TTL):
     _enrich_cache[key] = (time.time() + ttl, data)
 
-import re
 def _num(x):
     """
     Extrai o primeiro float de x.
-    Aceita dicts com {"value": ...}, strings com incertezas ("2.9 ± 0.5 g/cm3")
+    Aceita dicts {"value": ...}, strings com incerteza ("2.9 ± 0.5 g/cm^3")
     e notação científica. Retorna None se não achar número.
     """
     try:
@@ -254,6 +255,25 @@ def _num(x):
         return float(m.group(0)) if m else None
     except Exception:
         return None
+
+# def _num(x):
+#     """
+#     Extrai o primeiro float de x.
+#     Aceita dicts com {"value": ...}, strings com incertezas ("2.9 ± 0.5 g/cm3")
+#     e notação científica. Retorna None se não achar número.
+#     """
+#     try:
+#         if isinstance(x, dict):
+#             x = x.get("value")
+#         if x is None:
+#             return None
+#         if isinstance(x, (int, float)):
+#             return float(x)
+#         s = str(x)
+#         m = re.search(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", s)
+#         return float(m.group(0)) if m else None
+#     except Exception:
+#         return None
 
 def ssod_quaero(query: str):
     try:
@@ -343,7 +363,6 @@ def extract_phys_from_ssocard(card: dict):
         mass = _mass_from_GM(phys.get("GM"))
     density = _num(phys.get("density") or phys.get("rho"))
     taxo = extract_taxonomy(card)
-    # bibcode (se existir)
     refs = card.get("references") or []
     bib = None
     for ref in refs or []:
@@ -360,13 +379,24 @@ def extract_phys_from_sbdb(phys: dict):
     density = _num(phys.get("density") or phys.get("rho"))
     return {"diameter_km": diameter, "mass_kg": mass, "density_g_cm3": density}
 
-G_KM3_PER_KG_S2 = 6.67430e-20  # constante gravitacional em km^3/(kg*s^2)
+# G_KM3_PER_KG_S2 = 6.67430e-20  # constante gravitacional em km^3/(kg*s^2)
+
+# def _mass_from_GM(gm):
+#     gm_val = _num(gm)
+#     if gm_val is None:
+#         return None
+#     return gm_val / G_KM3_PER_KG_S2  # kg
+
+G_KM3_PER_KG_S2 = 6.67430e-20  # G em km^3/(kg*s^2)
 
 def _mass_from_GM(gm):
     gm_val = _num(gm)
     if gm_val is None:
         return None
     return gm_val / G_KM3_PER_KG_S2  # kg
+
+
+
 
 def _label_variants(label: str, fallback: dict = None):
     """
@@ -476,7 +506,9 @@ def enrich_by_label(label: str, neo_context: dict = None):
     if result["mass_kg"] is None:
         rho = result["density_g_cm3"]
         if rho is None:
-            rho = TAXO_RHO.get((result.get("taxonomy") or "").upper())
+            taxo_key = str(result.get("taxonomy") or "").upper()
+            rho = TAXO_RHO.get(taxo_key)
+            # rho = TAXO_RHO.get((result.get("taxonomy") or "").upper())
         est = estimate_mass_from_diameter_density(result.get("diameter_km"), rho)
         if est is not None:
             result["mass_kg"] = est
@@ -484,6 +516,7 @@ def enrich_by_label(label: str, neo_context: dict = None):
             if result["source"] is None:
                 result["source"] = "estimate"
 
+    # cacheia só se existir algum dado útil
     if any([result.get("mass_kg"), result.get("density_g_cm3"), result.get("diameter_km")]):
         _enrich_cache_set(ck, result)
     return result
@@ -707,9 +740,23 @@ def neo_hazardous(
             continue
     return {"count": len(filtered), "near_earth_objects": filtered}
 
+# @app.get("/neo/enrich/{neo_id}")
+# def neo_enrich(neo_id: str):
+#     neo = _get(f"{NASA_API}/neo/{neo_id}", {"api_key": NASA_KEY})
+#     label = neo.get("name") or neo.get("designation") or str(neo_id)
+#     data = enrich_by_label(label)
+#     return {"neo_id": neo_id, "label": label, "enrichment": data}
+
+
 @app.get("/neo/enrich/{neo_id}")
 def neo_enrich(neo_id: str):
-    neo = _get(f"{NASA_API}/neo/{neo_id}", {"api_key": NASA_KEY})
-    label = neo.get("name") or neo.get("designation") or str(neo_id)
-    data = enrich_by_label(label)
-    return {"neo_id": neo_id, "label": label, "enrichment": data}
+    try:
+        neo = _get(f"{NASA_API}/neo/{neo_id}", {"api_key": NASA_KEY})
+        label = neo.get("name") or neo.get("designation") or str(neo_id)
+        data = enrich_by_label(label)
+        return {"neo_id": neo_id, "label": label, "enrichment": data}
+    except Exception as e:
+        return JSONResponse(status_code=502, content={
+            "error": "enrichment_failed",
+            "detail": str(e)
+        })
