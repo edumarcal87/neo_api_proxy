@@ -6,8 +6,6 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-neo = _get(f"{NASA_API}/neo/{neo_id}", {"api_key": NASA_KEY})
-
 NASA_API = "https://api.nasa.gov/neo/rest/v1"
 NASA_KEY = os.getenv("NASA_API_KEY", "9cL9fpjqbydKR16ZMCJ1znPDTf9xN6uMOyvHcpFJ")
 ALLOWED_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")
@@ -687,10 +685,6 @@ def neo_feed(
                 neo["assessment"] = build_assessment(neo)
     return data
 
-from typing import Optional
-from fastapi.responses import JSONResponse
-from fastapi import Query
-
 @app.get("/neo/{neo_id}")
 def neo_detail(
     neo_id: str,
@@ -736,26 +730,6 @@ def neo_detail(
             neo["impact_error"] = str(e)
 
     return neo
-
-
-# @app.get("/neo/{neo_id}")
-# def neo_detail(
-#     neo_id: str,
-#     mitigations: bool = Query(True, description="Inclui avaliação por padrão"),
-#     enrich: bool = Query(False, description="Se true, junta massa/densidade")
-# ):
-#     params = {"api_key": NASA_KEY}
-#     neo = _get(f"{NASA_API}/neo/{neo_id}", params)
-#     if mitigations:
-#         neo["assessment"] = build_assessment(neo)
-#     if enrich:
-#         try:
-#             label = neo.get("name") or neo.get("designation") or str(neo_id)
-#             neo["enrichment"] = enrich_by_label(label, neo_context=neo)  # << aqui
-#         except Exception as e:
-#             neo["enrichment_error"] = str(e)
-#     return neo
-
 
 @app.get("/neo/browse")
 def neo_browse(page: int = 0, size: int = 20, mitigations: bool = Query(False), enrich: bool = Query(False)):
