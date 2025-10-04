@@ -1,16 +1,19 @@
 <!doctype html>
-<html>
+<html lang="pt-BR">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>NEO Advanced Demo</title>
   <style>
     :root{ --bg:#0b1020; --card:#131b34; --text:#e7ecff; --muted:#9bb0ff; --accent:#7aa2ff; }
+    *{ box-sizing:border-box; }
     body{ background:var(--bg); color:var(--text); font-family: ui-sans-serif, system-ui, Segoe UI, Roboto, sans-serif; margin:0; padding:24px; }
     .wrap{ max-width: 1200px; margin: 0 auto; }
     .row{ display:flex; gap:8px; flex-wrap:wrap; margin:8px 0; align-items:center; }
     input,button,select,textarea{ padding:10px 12px; border-radius:10px; border:1px solid #2a396b; background:#0f1833; color:var(--text); }
-    button{ cursor:pointer; }
+    input::placeholder{ color:#6f84c7; }
+    button{ cursor:pointer; transition: transform .05s ease; }
+    button:active{ transform: translateY(1px); }
     .card{ background:var(--card); border:1px solid #22305f; padding:16px; border-radius:16px; margin:12px 0; }
     .pill{ display:inline-block; padding:4px 10px; border-radius:999px; font-size:12px; border:1px solid #2a396b; background:#0f1833; }
     .grid{ display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:12px; }
@@ -24,6 +27,8 @@
     .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
     table{ width:100%; border-collapse:collapse; }
     th, td{ padding:8px; border-bottom:1px solid #22305f; text-align:left; }
+    a{ color:var(--muted); }
+    .error{ color:#ff8686; }
   </style>
 </head>
 <body>
@@ -111,26 +116,47 @@
     const base = () => $('#api').value.trim();
     const setStatus = (t) => $('#status').textContent = t || '';
 
-    document.querySelector('#impact').addEventListener('change', (e)=>{
-      const show = e.target.checked;
-      document.querySelector('#impactParams').style.display = show ? 'flex' : 'none';
-      document.querySelector('#oceanParams').style.display = show ? 'flex' : 'none';
+    // Mostrar/ocultar parâmetros de impacto
+    document.addEventListener('DOMContentLoaded', () => {
+      const imp = $('#impact');
+      const toggle = () => {
+        const show = imp.checked;
+        $('#impactParams').style.display = show ? 'flex' : 'none';
+        $('#oceanParams').style.display = show ? 'flex' : 'none';
+      };
+      imp.addEventListener('change', toggle);
+      toggle();
     });
+
+    async function safeFetchJson(url, opts) {
+      const r = await fetch(url, opts);
+      const text = await r.text();
+      try {
+        const js = JSON.parse(text);
+        if (!r.ok) {
+          throw new Error(js.detail || js.error || r.status + ' ' + r.statusText);
+        }
+        return js;
+      } catch (e) {
+        // quando o backend retornar texto não-JSON ou erro
+        throw new Error('HTTP ' + r.status + ': ' + (text || e.message));
+      }
+    }
 
     async function ping(){
       setStatus('');
       try{
-        const r = await fetch(base() + '/health');
-        const data = await r.json();
+        const data = await safeFetchJson(base() + '/health');
         out(data);
         setStatus('online ✔');
       }catch(e){
-        out('Erro: ' + e);
+        out('Erro: ' + e.message);
         setStatus('offline ✖');
       }
     }
 
-    function fmt(x, d=2){ return (x===null||x===undefined) ? 'n/a' : Number(x).toFixed(d); }
+    function fmt(x, d=2){ return (x===null||x===undefined||Number.isNaN(Number(x))) ? 'n/a' : Number(x).toFixed(d); }
+
     function enrichmentCard(e){
       if(!e) return '<em>sem enrichment</em>';
       return `
@@ -144,6 +170,7 @@
         </ul>
       `;
     }
+
     function assessmentCard(a){
       if(!a) return '';
       const m = a.metrics || {};
@@ -161,114 +188,122 @@
         </div>
       `;
     }
+
     function oceanCard(o){
       if(!o) return '<em>sem dados oceânicos</em>';
       const far = o.far_field || [];
-      const rows = far.map(p => \`
+      const rows = far.map(p => `
         <tr>
-          <td>\${fmt(p.distance_km,0)}</td>
-          <td>\${fmt(p.deep_water_amp_m)}</td>
-          <td>\${fmt(p.coastal_amp_m)}</td>
-          <td>\${fmt(p.runup_m)}</td>
-        </tr>\`).join('');
-      return \`
+          <td>${fmt(p.distance_km,0)}</td>
+          <td>${fmt(p.deep_water_amp_m)}</td>
+          <td>${fmt(p.coastal_amp_m)}</td>
+          <td>${fmt(p.runup_m)}</td>
+        </tr>`).join('');
+      return `
         <div class="card">
           <b>Ocean/Tsunami</b>
           <ul>
-            <li><b>Initial amp (m):</b> \${fmt(o.initial_amp_m)}</li>
-            <li><b>Near-field radius (km):</b> \${fmt(o.nearfield_radius_km)}</li>
+            <li><b>Initial amp (m):</b> ${fmt(o.initial_amp_m)}</li>
+            <li><b>Near-field radius (km):</b> ${fmt(o.nearfield_radius_km)}</li>
           </ul>
           <div class="small">Far-field (exemplos de distâncias costeiras)</div>
           <div style="overflow:auto">
             <table class="mono">
               <thead><tr><th>Dist (km)</th><th>Deep (m)</th><th>Coastal (m)</th><th>Run-up (m)</th></tr></thead>
-              <tbody>\${rows}</tbody>
+              <tbody>${rows}</tbody>
             </table>
           </div>
         </div>
-      \`;
+      `;
     }
+
     function seismicCard(s){
       if(!s) return '<em>sem dados sísmicos</em>';
-      return \`
+      return `
         <div class="card">
           <b>Seismic</b>
           <ul>
-            <li><b>Mw:</b> \${fmt(s.Mw,2)}</li>
-            <li><b>E_s (J):</b> \${fmt(s.E_s_j,0)}</li>
-            <li><b>Coupling:</b> \${fmt(s.coupling,6)}</li>
+            <li><b>Mw:</b> ${fmt(s.Mw,2)}</li>
+            <li><b>E_s (J):</b> ${fmt(s.E_s_j,0)}</li>
+            <li><b>Coupling:</b> ${fmt(s.coupling,6)}</li>
           </ul>
         </div>
-      \`;
+      `;
     }
+
     function impactCard(imp){
       if(!imp) return '<em>sem impacto</em>';
       const r = imp.inputs_resolved || {};
       const e = imp.energy || {};
       const c = imp.crater || {};
-      return \`
+      return `
         <div class="card">
           <div><span class="pill">Impact</span></div>
           <div class="grid">
             <div class="card">
               <b>Inputs</b>
               <ul>
-                <li><b>Diameter (km):</b> \${fmt(r.diameter_km)}</li>
-                <li><b>Density (g/cm³):</b> \${fmt(r.density_g_cm3)}</li>
-                <li><b>Mass (kg):</b> \${fmt(r.mass_kg, 0)}</li>
-                <li><b>Velocity (km/s):</b> \${fmt(r.velocity_kms)}</li>
-                <li><b>Angle (deg):</b> \${fmt(r.angle_deg)}</li>
-                <li><b>Target:</b> \${r.target || 'n/a'}</li>
+                <li><b>Diameter (km):</b> ${fmt(r.diameter_km)}</li>
+                <li><b>Density (g/cm³):</b> ${fmt(r.density_g_cm3)}</li>
+                <li><b>Mass (kg):</b> ${fmt(r.mass_kg, 0)}</li>
+                <li><b>Velocity (km/s):</b> ${fmt(r.velocity_kms)}</li>
+                <li><b>Angle (deg):</b> ${fmt(r.angle_deg)}</li>
+                <li><b>Target:</b> ${r.target || 'n/a'}</li>
               </ul>
             </div>
             <div class="card">
               <b>Energy</b>
               <ul>
-                <li><b>Kinetic (J):</b> \${fmt(e.kinetic_j, 0)}</li>
-                <li><b>TNT (kt):</b> \${fmt(e.tnt_kt)}</li>
-                <li><b>TNT (Mt):</b> \${fmt(e.tnt_Mt, 3)}</li>
-                <li><b>Momentum (N·s):</b> \${fmt(e.momentum_Ns, 0)}</li>
+                <li><b>Kinetic (J):</b> ${fmt(e.kinetic_j, 0)}</li>
+                <li><b>TNT (kt):</b> ${fmt(e.tnt_kt)}</li>
+                <li><b>TNT (Mt):</b> ${fmt(e.tnt_Mt, 3)}</li>
+                <li><b>Momentum (N·s):</b> ${fmt(e.momentum_Ns, 0)}</li>
               </ul>
             </div>
             <div class="card">
               <b>Crater</b>
               <ul>
-                <li><b>Transient D (km):</b> \${fmt(c.transient_diameter_km)}</li>
-                <li><b>Final D (km):</b> \${fmt(c.final_diameter_km)}</li>
-                <li><b>Depth (km):</b> \${fmt(c.depth_km)}</li>
-                <li><b>Type:</b> \${c.type || 'n/a'}</li>
-                <li><b>Final/Impactor ratio:</b> \${fmt(c.ratio_final_to_impactor)}</li>
+                <li><b>Transient D (km):</b> ${fmt(c.transient_diameter_km)}</li>
+                <li><b>Final D (km):</b> ${fmt(c.final_diameter_km)}</li>
+                <li><b>Depth (km):</b> ${fmt(c.depth_km)}</li>
+                <li><b>Type:</b> ${c.type || 'n/a'}</li>
+                <li><b>Final/Impactor ratio:</b> ${fmt(c.ratio_final_to_impactor)}</li>
               </ul>
             </div>
           </div>
           <div class="grid">
-            \${oceanCard(imp.ocean)}
-            \${seismicCard(imp.seismic)}
+            ${oceanCard(imp.ocean)}
+            ${seismicCard(imp.seismic)}
           </div>
         </div>
-      \`;
+      `;
     }
+
     function neoCard(neo){
-      return \`
+      const jpl = neo.nasa_jpl_url || neo.nasa_jpl_link || '#';
+      const name = neo.name || neo.designation || '(sem nome)';
+      const id = neo.id || neo.neo_reference_id || '';
+      return `
         <div class="card">
           <div class="row" style="justify-content:space-between;">
-            <div><b>\${neo.name}</b> <span class="pill">ID \${neo.id}</span></div>
-            <a href="\${neo.nasa_jpl_url}" target="_blank">JPL</a>
+            <div><b>${name}</b> <span class="pill">ID ${id}</span></div>
+            <a href="${jpl}" target="_blank" rel="noopener noreferrer">JPL</a>
           </div>
-          \${neo.assessment ? '<div class="card">'+assessmentCard(neo.assessment)+'</div>' : ''}
-          \${neo.enrichment ? '<div class="card"><span class="pill">Enrichment</span>'+enrichmentCard(neo.enrichment)+'</div>' : ''}
-          \${neo.impact ? impactCard(neo.impact) : ''}
-          \${neo.enrichment_error ? '<div class="small">enrichment_error: '+neo.enrichment_error+'</div>' : ''}
-          \${neo.impact_error ? '<div class="small">impact_error: '+neo.impact_error+'</div>' : ''}
+          ${neo.assessment ? '<div class="card">'+assessmentCard(neo.assessment)+'</div>' : ''}
+          ${neo.enrichment ? '<div class="card"><span class="pill">Enrichment</span>'+enrichmentCard(neo.enrichment)+'</div>' : ''}
+          ${neo.impact ? impactCard(neo.impact) : ''}
+          ${neo.enrichment_error ? '<div class="small error">enrichment_error: '+neo.enrichment_error+'</div>' : ''}
+          ${neo.impact_error ? '<div class="small error">impact_error: '+neo.impact_error+'</div>' : ''}
         </div>
-      \`;
+      `;
     }
 
     async function detail(){
       const id = $('#neoId').value.trim();
+      if(!id){ out('Informe um neo_id.'); return; }
       const enrich = $('#enrich').checked ? 'true' : 'false';
       const doImpact = $('#impact').checked ? 'true' : 'false';
-      let url = new URL(base() + '/neo/' + id);
+      const url = new URL(base() + '/neo/' + encodeURIComponent(id));
       url.searchParams.set('mitigations', 'true');
       url.searchParams.set('enrich', enrich);
       url.searchParams.set('impact', doImpact);
@@ -302,27 +337,29 @@
       }
 
       try{
-        const r = await fetch(url);
-        const neo = await r.json();
-        const card = neoCard(neo);
-        $('#detailOut').innerHTML = card;
-      }catch(err){ out('Erro: ' + err); }
+        const neo = await safeFetchJson(url.toString());
+        $('#detailOut').innerHTML = neoCard(neo);
+      }catch(err){
+        $('#detailOut').innerHTML = '<div class="error">Erro: '+(err.message||err)+'</div>';
+      }
     }
 
     async function enrich(){
       const id = $('#neoId2').value.trim();
+      if(!id){ out('Informe um neo_id.'); return; }
       try{
-        const r = await fetch(base() + '/neo/enrich/' + id);
-        const js = await r.json();
+        const js = await safeFetchJson(base() + '/neo/enrich/' + encodeURIComponent(id));
         $('#enrichOut').innerHTML = '<div class="card">'+enrichmentCard(js.enrichment)+'</div>';
-      }catch(err){ out('Erro: ' + err); }
+      }catch(err){
+        $('#enrichOut').innerHTML = '<div class="error">Erro: '+(err.message||err)+'</div>';
+      }
     }
 
     async function runFilter(){
       const params = new URLSearchParams();
-      params.set('pages', $('#pages').value);
-      params.set('size', $('#size').value);
-      params.set('limit', $('#limit').value);
+      params.set('pages', $('#pages').value || '2');
+      params.set('size', $('#size').value || '30');
+      params.set('limit', $('#limit').value || '50');
       params.set('mitigations', $('#mit').checked ? 'true' : 'false');
       params.set('enrich', $('#enr').checked ? 'true' : 'false');
       if($('#minD').value) params.set('min_diameter_km', $('#minD').value);
@@ -330,11 +367,12 @@
       if($('#daysMax').value) params.set('days_max', $('#daysMax').value);
       if($('#body').value) params.set('approach_body', $('#body').value);
       try{
-        const r = await fetch(base() + '/neo/filter?' + params.toString());
-        const data = await r.json();
-        const items = data.near_earth_objects || [];
+        const data = await safeFetchJson(base() + '/neo/filter?' + params.toString());
+        const items = data.near_earth_objects || data.items || [];
         $('#filterOut').innerHTML = (items.length ? items.map(neoCard).join('') : '<em>sem resultados</em>');
-      }catch(err){ out('Erro: ' + err); }
+      }catch(err){
+        $('#filterOut').innerHTML = '<div class="error">Erro: '+(err.message||err)+'</div>';
+      }
     }
   </script>
 </body>
