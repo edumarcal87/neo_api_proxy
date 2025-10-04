@@ -12,9 +12,33 @@ NASA_API = "https://api.nasa.gov/neo/rest/v1"
 NASA_KEY = os.getenv("NASA_API_KEY", "9cL9fpjqbydKR16ZMCJ1znPDTf9xN6uMOyvHcpFJ")
 ALLOWED_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")
 CACHE_TTL = int(os.getenv("CACHE_TTL", "300"))
+DEFAULT_RHO_G_CM3 = float(os.getenv("DEFAULT_RHO_G_CM3", "2.5"))
+DEFAULT_ALBEDO    = float(os.getenv("DEFAULT_ALBEDO", "0.14"))
 
 SSOD_BASE = "https://ssp.imcce.fr/webservices/ssodnet/api"
 SBDB_BASE = "https://ssd-api.jpl.nasa.gov/sbdb.api"
+
+def estimate_diameter_from_H(H, pV=DEFAULT_ALBEDO):
+    """
+    D(km) = 1329 / sqrt(pV) * 10^(-H/5)
+    """
+    Hn = _num(H)
+    pv = _num(pV)
+    if Hn is None or pv is None or pv <= 0:
+        return None
+    return 1329.0 / (pv ** 0.5) * (10 ** (-Hn / 5.0))
+
+def _diameter_from_neows(neo: dict):
+    try:
+        k = (neo or {}).get("estimated_diameter", {}).get("kilometers", {})
+        dmin = _num(k.get("estimated_diameter_min"))
+        dmax = _num(k.get("estimated_diameter_max"))
+        if dmin and dmax:
+            return (dmin + dmax) / 2.0
+        return dmax or dmin
+    except Exception:
+        return None
+
 
 _cache: Dict[Any, Tuple[float, Any]] = {}
 
@@ -495,7 +519,7 @@ def _label_variants(label: str, fallback: dict = None):
 #         _enrich_cache_set(ck, result)
 #     return result
 
-def enrich_by_label(label: str):
+def enrich_by_label(label: str, neo_context: dict = None):
     ck = ("enrich", label)
     cached = _enrich_cache_get(ck)
     if cached is not None:
@@ -503,12 +527,13 @@ def enrich_by_label(label: str):
 
     result = {"source": None, "mass_kg": None, "density_g_cm3": None,
               "diameter_km": None, "taxonomy": None, "bibcode": None, "note": None}
+    notes = []
 
-    # 1) SsODNet (tenta resolver e ler o card)
+    # 1) Tenta SsODNet
     try:
         sid = ssod_quaero(label)
         if sid:
-            card = ssod_card(sid)  # agora já vem normalizado para dict
+            card = ssod_card(sid)
             ssop = extract_phys_from_ssocard(card)
             if any([ssop.get("mass_kg"), ssop.get("density_g_cm3"), ssop.get("diameter_km")]):
                 result.update(ssop)
@@ -516,7 +541,7 @@ def enrich_by_label(label: str):
     except Exception:
         pass
 
-    # 2) SBDB fallback
+    # 2) Tenta SBDB (fallback)
     try:
         if result["mass_kg"] is None or result["density_g_cm3"] is None or result["diameter_km"] is None:
             sbp = extract_phys_from_sbdb(sbdb_phys(label))
@@ -528,21 +553,52 @@ def enrich_by_label(label: str):
     except Exception:
         pass
 
-    # 3) Estimar massa se ainda faltou
-    if result["mass_kg"] is None:
-        taxo_key = str(result.get("taxonomy") or "").upper()
-        rho = result.get("density_g_cm3") or TAXO_RHO.get(taxo_key)
-        est = estimate_mass_from_diameter_density(result.get("diameter_km"), rho)
-        if est is not None:
-            result["mass_kg"] = est
-            result["note"] = "estimated from diameter and density"
-            if result["source"] is None:
-                result["source"] = "estimate"
+    # 3) Fallbacks *estimados* (preencher nulos)
+    # 3a) Diâmetro: usa NeoWS se ainda faltar
+    if result["diameter_km"] is None and neo_context:
+        d_ctx = _diameter_from_neows(neo_context)
+        if d_ctx is not None:
+            result["diameter_km"] = d_ctx
+            notes.append("diameter from NeoWS (avg min/max)")
 
-    # cache só se houver algo útil
-    if any([result.get("mass_kg"), result.get("density_g_cm3"), result.get("diameter_km")]):
-        _enrich_cache_set(ck, result)
+    # 3b) Se ainda faltar diâmetro: estima via H + albedo padrão
+    if result["diameter_km"] is None:
+        H_ctx = (neo_context or {}).get("absolute_magnitude_h")
+        d_est = estimate_diameter_from_H(H_ctx, DEFAULT_ALBEDO)
+        if d_est is not None:
+            result["diameter_km"] = d_est
+            notes.append(f"diameter estimated from H (pV={DEFAULT_ALBEDO})")
+
+    # 3c) Densidade: usa taxonomia -> TAXO_RHO; se não houver, usa DEFAULT_RHO_G_CM3
+    if result["density_g_cm3"] is None:
+        taxo_key = str(result.get("taxonomy") or "").upper()
+        rho = TAXO_RHO.get(taxo_key) if taxo_key else None
+        if rho is not None:
+            result["density_g_cm3"] = rho
+            notes.append(f"density from taxonomy ({taxo_key})")
+        else:
+            result["density_g_cm3"] = DEFAULT_RHO_G_CM3
+            notes.append(f"density default ({DEFAULT_RHO_G_CM3} g/cm^3)")
+
+    # 3d) Massa: sempre que tiver diâmetro + densidade, calcula
+    if result["mass_kg"] is None and result.get("diameter_km") and result.get("density_g_cm3"):
+        m_est = estimate_mass_from_diameter_density(result["diameter_km"], result["density_g_cm3"])
+        if m_est is not None:
+            result["mass_kg"] = m_est
+            notes.append("mass estimated from diameter & density")
+
+    # Se nada veio de fontes externas, marque como estimate
+    if result["source"] is None:
+        result["source"] = "estimate"
+
+    # Monte nota
+    if notes:
+        result["note"] = "; ".join(notes)
+
+    # Cacheia mesmo se for estimado (evita recomputo)
+    _enrich_cache_set(ck, result)
     return result
+
 
 
 
@@ -587,9 +643,13 @@ def neo_detail(
     if mitigations:
         neo["assessment"] = build_assessment(neo)
     if enrich:
-        label = neo.get("name") or neo.get("designation") or str(neo_id)
-        neo["enrichment"] = enrich_by_label(label)
+        try:
+            label = neo.get("name") or neo.get("designation") or str(neo_id)
+            neo["enrichment"] = enrich_by_label(label, neo_context=neo)  # << aqui
+        except Exception as e:
+            neo["enrichment_error"] = str(e)
     return neo
+
 
 @app.get("/neo/browse")
 def neo_browse(page: int = 0, size: int = 20, mitigations: bool = Query(False), enrich: bool = Query(False)):
@@ -777,10 +837,11 @@ def neo_enrich(neo_id: str):
     try:
         neo = _get(f"{NASA_API}/neo/{neo_id}", {"api_key": NASA_KEY})
         label = neo.get("name") or neo.get("designation") or str(neo_id)
-        data = enrich_by_label(label)
+        data = enrich_by_label(label, neo_context=neo)  # << aqui
         return {"neo_id": neo_id, "label": label, "enrichment": data}
     except Exception as e:
         return JSONResponse(status_code=502, content={
             "error": "enrichment_failed",
             "detail": str(e)
         })
+
