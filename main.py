@@ -6,6 +6,8 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+neo = _get(f"{NASA_API}/neo/{neo_id}", {"api_key": NASA_KEY})
+
 NASA_API = "https://api.nasa.gov/neo/rest/v1"
 NASA_KEY = os.getenv("NASA_API_KEY", "9cL9fpjqbydKR16ZMCJ1znPDTf9xN6uMOyvHcpFJ")
 ALLOWED_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")
@@ -685,23 +687,74 @@ def neo_feed(
                 neo["assessment"] = build_assessment(neo)
     return data
 
+from typing import Optional
+from fastapi.responses import JSONResponse
+from fastapi import Query
+
 @app.get("/neo/{neo_id}")
 def neo_detail(
     neo_id: str,
     mitigations: bool = Query(True, description="Inclui avaliação por padrão"),
-    enrich: bool = Query(False, description="Se true, junta massa/densidade")
+    enrich: bool = Query(False, description="Se true, junta massa/densidade"),
+    # —— NOVOS parâmetros (impacto) ——
+    impact: bool = Query(False, description="Se true, calcula efeitos de impacto"),
+    velocity_kms: Optional[float] = Query(None, description="Velocidade no impacto (km/s)"),
+    angle_deg: float = Query(45.0, ge=1.0, le=90.0, description="Ângulo de impacto (90=vertical)"),
+    target: str = Query("rock", description="Alvo: rock|sedimentary|crystalline|water|ice"),
+    diameter_km: Optional[float] = Query(None, description="Sobrescreve diâmetro do projetil (km)"),
+    density_g_cm3: Optional[float] = Query(None, description="Sobrescreve densidade (g/cm^3)"),
+    mass_kg: Optional[float] = Query(None, description="Sobrescreve massa (kg)")
 ):
     params = {"api_key": NASA_KEY}
     neo = _get(f"{NASA_API}/neo/{neo_id}", params)
+
     if mitigations:
         neo["assessment"] = build_assessment(neo)
+
+    enr = None
     if enrich:
         try:
             label = neo.get("name") or neo.get("designation") or str(neo_id)
-            neo["enrichment"] = enrich_by_label(label, neo_context=neo)  # << aqui
+            enr = enrich_by_label(label, neo_context=neo)
+            neo["enrichment"] = enr
         except Exception as e:
             neo["enrichment_error"] = str(e)
+
+    if impact:
+        try:
+            neo["impact"] = estimate_impact_effects(
+                neo=neo,
+                enr=enr,  # pode ser None; a função usa fallbacks
+                velocity_kms=velocity_kms,
+                angle_deg=angle_deg,
+                target=target,
+                override_diameter_km=diameter_km,
+                override_density_g_cm3=density_g_cm3,
+                override_mass_kg=mass_kg
+            )
+        except Exception as e:
+            neo["impact_error"] = str(e)
+
     return neo
+
+
+# @app.get("/neo/{neo_id}")
+# def neo_detail(
+#     neo_id: str,
+#     mitigations: bool = Query(True, description="Inclui avaliação por padrão"),
+#     enrich: bool = Query(False, description="Se true, junta massa/densidade")
+# ):
+#     params = {"api_key": NASA_KEY}
+#     neo = _get(f"{NASA_API}/neo/{neo_id}", params)
+#     if mitigations:
+#         neo["assessment"] = build_assessment(neo)
+#     if enrich:
+#         try:
+#             label = neo.get("name") or neo.get("designation") or str(neo_id)
+#             neo["enrichment"] = enrich_by_label(label, neo_context=neo)  # << aqui
+#         except Exception as e:
+#             neo["enrichment_error"] = str(e)
+#     return neo
 
 
 @app.get("/neo/browse")
