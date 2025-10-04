@@ -1,9 +1,7 @@
-import os, time, math
-import re  # <— ADICIONE
-import requests
+import os, time, math, re, requests, math
+
 from datetime import datetime, timezone
 from typing import Optional, Tuple, Dict, Any, List
-
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -14,9 +12,101 @@ ALLOWED_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")
 CACHE_TTL = int(os.getenv("CACHE_TTL", "300"))
 DEFAULT_RHO_G_CM3 = float(os.getenv("DEFAULT_RHO_G_CM3", "2.5"))
 DEFAULT_ALBEDO    = float(os.getenv("DEFAULT_ALBEDO", "0.14"))
-
 SSOD_BASE = "https://ssp.imcce.fr/webservices/ssodnet/api"
 SBDB_BASE = "https://ssd-api.jpl.nasa.gov/sbdb.api"
+
+# Alvos básicos
+TARGET_RHO = {
+    "rock": 2700.0,        # kg/m^3 (rocha cristalina ~2.7)
+    "sedimentary": 2200.0, # kg/m^3
+    "crystalline": 2700.0, # kg/m^3
+    "water": 1000.0,       # kg/m^3
+    "ice": 930.0           # kg/m^3 (gelo ~0.93)
+}
+
+G_EARTH = 9.80665  # m/s^2
+JOULES_PER_KT_TNT = 4.184e12  # 1 kt TNT
+JOULES_PER_MT_TNT = 4.184e15  # 1 Mt TNT
+
+def _to_kg_m3_from_g_cm3(x):
+    v = _num(x)
+    return None if v is None else v * 1000.0
+
+def _resolve_velocity_kms(neo: dict, velocity_kms: float | None):
+    # usa o que veio da query; se não, tenta "metrics"; senão, 20 km/s (típico)
+    if velocity_kms:
+        return float(velocity_kms)
+    try:
+        m = compute_metrics(neo) or {}
+        v = m.get("max_rel_vel_kms") or m.get("min_rel_vel_kms")
+        if v:
+            return float(v)
+    except Exception:
+        pass
+    return 20.0  # típico de impactos na Terra (11–72 km/s). :contentReference[oaicite:3]{index=3}
+
+def _resolve_diameter_km(neo: dict, enr: dict | None, override_km: float | None):
+    if override_km is not None:
+        return float(override_km)
+    if enr and enr.get("diameter_km"):
+        return float(enr["diameter_km"])
+    # fallback: NeoWS média min/max
+    d_ctx = _diameter_from_neows(neo)
+    if d_ctx is not None:
+        return d_ctx
+    # último recurso: por H com albedo padrão
+    return estimate_diameter_from_H(neo.get("absolute_magnitude_h"), DEFAULT_ALBEDO)
+
+def _resolve_density_kg_m3(enr: dict | None, override_g_cm3: float | None):
+    if override_g_cm3 is not None:
+        return _to_kg_m3_from_g_cm3(override_g_cm3)
+    if enr and enr.get("density_g_cm3") is not None:
+        return _to_kg_m3_from_g_cm3(enr["density_g_cm3"])
+    return _to_kg_m3_from_g_cm3(DEFAULT_RHO_G_CM3)
+
+def _resolve_mass_kg(enr: dict | None, override_mass_kg: float | None, d_km: float | None, rho_g_cm3: float | None):
+    if override_mass_kg is not None:
+        return float(override_mass_kg)
+    if enr and enr.get("mass_kg") is not None:
+        return float(enr["mass_kg"])
+    # estima pela esfera
+    return estimate_mass_from_diameter_density(d_km, rho_g_cm3)
+
+def _crater_transient_diameter_m(L_m, v_ms, rho_i, rho_t, theta_deg):
+    """
+    Lei de pi-scaling (EIEP Eq. 21*):
+    D_tc = 1.161 * (rho_i/rho_t)^(1/3) * L^0.78 * v^0.44 * g^-0.22 * (sin(theta))^(1/3)
+    - L em m, v em m/s, g em m/s^2 → D_tc em m.  :contentReference[oaicite:4]{index=4}
+    """
+    if not all([L_m, v_ms, rho_i, rho_t, theta_deg]):
+        return None
+    try:
+        mu = (rho_i / rho_t) ** (1.0 / 3.0)
+        sin_term = math.sin(math.radians(theta_deg)) ** (1.0 / 3.0)
+        return 1.161 * mu * (L_m ** 0.78) * (v_ms ** 0.44) * (G_EARTH ** -0.22) * sin_term
+    except Exception:
+        return None
+
+def _crater_final_from_transient_km(Dtc_m):
+    """ D_fr ≈ 1.25 * D_tc (simples). Resultado em km.  :contentReference[oaicite:5]{index=5} """
+    if Dtc_m is None:
+        return None
+    return 1.25 * (Dtc_m / 1000.0)
+
+def _crater_depth_km(Dfr_km):
+    """
+    Profundidade aproximada:
+    - simples: d ≈ 0.20 * Dfr (razão típica d/D ~0.14–0.20)  :contentReference[oaicite:6]{index=6}
+    - complexa (Dfr ≥ 3.2 km): d ≈ 0.4 * Dfr^0.3  (EIEP Eq. 28*)  :contentReference[oaicite:7]{index=7}
+    """
+    if Dfr_km is None:
+        return None
+    if Dfr_km < 3.2:
+        return 0.20 * Dfr_km
+    # relação de complexos (aprox.)
+    return 0.4 * (Dfr_km ** 0.3)
+
+
 
 def estimate_diameter_from_H(H, pV=DEFAULT_ALBEDO):
     """
@@ -38,6 +128,66 @@ def _diameter_from_neows(neo: dict):
         return dmax or dmin
     except Exception:
         return None
+
+def estimate_impact_effects(neo: dict,
+                            enr: dict | None,
+                            velocity_kms: float | None,
+                            angle_deg: float,
+                            target: str,
+                            override_diameter_km: float | None = None,
+                            override_density_g_cm3: float | None = None,
+                            override_mass_kg: float | None = None):
+    # parâmetros resolvidos
+    v_kms = _resolve_velocity_kms(neo, velocity_kms)
+    v_ms = v_kms * 1000.0
+    d_km = _resolve_diameter_km(neo, enr, override_diameter_km)
+    rho_g_cm3 = override_density_g_cm3 if override_density_g_cm3 is not None else (enr or {}).get("density_g_cm3", DEFAULT_RHO_G_CM3)
+    m_kg = _resolve_mass_kg(enr, override_mass_kg, d_km, rho_g_cm3)
+
+    # densidades p/ cratera (projetil & alvo)
+    rho_i = _to_kg_m3_from_g_cm3(rho_g_cm3) or 2500.0
+    rho_t = TARGET_RHO.get((target or "rock").lower(), 2700.0)
+
+    # energia e TNT
+    E_j = 0.5 * float(m_kg) * (v_ms ** 2) if (m_kg is not None) else None
+    tnt_kt = (E_j / JOULES_PER_KT_TNT) if E_j is not None else None
+    tnt_Mt = (E_j / JOULES_PER_MT_TNT) if E_j is not None else None
+    p_Ns = (float(m_kg) * v_ms) if m_kg is not None else None
+
+    # Cratera (transiente e final)
+    L_m = d_km * 1000.0 if d_km is not None else None
+    Dtc_m = _crater_transient_diameter_m(L_m, v_ms, rho_i, rho_t, angle_deg)
+    Dfr_km = _crater_final_from_transient_km(Dtc_m)
+    depth_km = _crater_depth_km(Dfr_km)
+    crater_type = "simple" if (Dfr_km is not None and Dfr_km < 3.2) else ("complex" if Dfr_km is not None else None)
+
+    return {
+        "inputs_resolved": {
+            "diameter_km": d_km,
+            "density_g_cm3": rho_g_cm3,
+            "mass_kg": m_kg,
+            "velocity_kms": v_kms,
+            "angle_deg": angle_deg,
+            "target": target,
+        },
+        "energy": {
+            "kinetic_j": E_j,
+            "tnt_kt": tnt_kt,
+            "tnt_Mt": tnt_Mt,
+            "momentum_Ns": p_Ns
+        },
+        "crater": {
+            "transient_diameter_km": (Dtc_m / 1000.0) if Dtc_m is not None else None,
+            "final_diameter_km": Dfr_km,
+            "depth_km": depth_km,
+            "type": crater_type,
+            "ratio_final_to_impactor": (Dfr_km / d_km) if (Dfr_km and d_km) else None
+        },
+        "notes": [
+            "First-order scaling based on Collins–Melosh–Marcus (EIEP).",
+            "No atmospheric entry/airburst modelling here."
+        ]
+    }
 
 
 _cache: Dict[Any, Tuple[float, Any]] = {}
@@ -278,26 +428,6 @@ def _num(x):
     except Exception:
         return None
 
-
-# def _num(x):
-#     """
-#     Extrai o primeiro float de x.
-#     Aceita dicts com {"value": ...}, strings com incertezas ("2.9 ± 0.5 g/cm3")
-#     e notação científica. Retorna None se não achar número.
-#     """
-#     try:
-#         if isinstance(x, dict):
-#             x = x.get("value")
-#         if x is None:
-#             return None
-#         if isinstance(x, (int, float)):
-#             return float(x)
-#         s = str(x)
-#         m = re.search(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", s)
-#         return float(m.group(0)) if m else None
-#     except Exception:
-#         return None
-
 def ssod_quaero(query: str):
     try:
         r = requests.get(f"{SSOD_BASE}/quaero/", params={"q": query}, timeout=30)
@@ -309,15 +439,6 @@ def ssod_quaero(query: str):
         return None
     except Exception:
         return None
-
-# def ssod_card(ssod_id: str):
-#     try:
-#         r = requests.get(f"{SSOD_BASE}/ssocard/{ssod_id}", timeout=30)
-#         if r.status_code != 200:
-#             return None
-#         return r.json()
-#     except Exception:
-#         return None
 
 def ssod_card(ssod_id: str):
     try:
@@ -372,29 +493,6 @@ def extract_taxonomy(card: dict):
             tx = taxo.get("class") or taxo.get("type") or taxo.get("complex")
     return tx
 
-# def extract_phys_from_ssocard(card: dict):
-#     if not card: return {}
-#     p = card.get("parameters") or {}
-#     phys = p.get("physical") or {}
-#     diameter = _num(phys.get("diameter") or phys.get("equivalent_diameter"))
-#     mass = _num(phys.get("mass") or phys.get("GM"))
-#     density = _num(phys.get("density") or phys.get("rho"))
-#     taxo = extract_taxonomy(card)
-#     refs = card.get("references") or []
-#     bib = None
-#     if isinstance(refs, list) and refs:
-#         for ref in refs:
-#             if isinstance(ref, dict) and ref.get("bibcode"):
-#                 bib = ref["bibcode"]; break
-#     return {"diameter_km": diameter, "mass_kg": mass, "density_g_cm3": density, "taxonomy": taxo, "bibcode": bib}
-
-# def extract_phys_from_sbdb(phys: dict):
-#     if not phys: return {}
-#     diameter = _num(phys.get("diameter"))
-#     mass = _num(phys.get("mass") or phys.get("GM"))
-#     density = _num(phys.get("density") or phys.get("rho"))
-#     return {"diameter_km": diameter, "mass_kg": mass, "density_g_cm3": density}
-
 def extract_phys_from_sbdb(phys: dict):
     if not isinstance(phys, dict):
         return {}
@@ -429,14 +527,6 @@ def extract_phys_from_ssocard(card: dict):
                 break
     return {"diameter_km": diameter, "mass_kg": mass, "density_g_cm3": density, "taxonomy": taxo, "bibcode": bib}
 
-
-# G_KM3_PER_KG_S2 = 6.67430e-20  # constante gravitacional em km^3/(kg*s^2)
-
-# def _mass_from_GM(gm):
-#     gm_val = _num(gm)
-#     if gm_val is None:
-#         return None
-#     return gm_val / G_KM3_PER_KG_S2  # kg
 
 G_KM3_PER_KG_S2 = 6.67430e-20  # km^3/(kg*s^2)
 
@@ -481,43 +571,6 @@ def _label_variants(label: str, fallback: dict = None):
             out.append(des)
 
     return out
-
-# def enrich_by_label(label: str):
-#     ck = ("enrich", label)
-#     cached = _enrich_cache_get(ck)
-#     if cached is not None:
-#         return cached
-
-#     result = {"source": None, "mass_kg": None, "density_g_cm3": None, "diameter_km": None, "taxonomy": None, "bibcode": None, "note": None}
-#     sid = ssod_quaero(label)
-#     if sid:
-#         card = ssod_card(sid)
-#         ssop = extract_phys_from_ssocard(card)
-#         if any([ssop.get("mass_kg"), ssop.get("density_g_cm3"), ssop.get("diameter_km")]):
-#             result.update(ssop)
-#             result["source"] = "ssodnet"
-#     if result["mass_kg"] is None or result["density_g_cm3"] is None or result["diameter_km"] is None:
-#         sbp = extract_phys_from_sbdb(sbdb_phys(label))
-#         for k, v in sbp.items():
-#             if result.get(k) is None and v is not None:
-#                 result[k] = v
-#         if any([sbp.get("mass_kg"), sbp.get("density_g_cm3"), sbp.get("diameter_km")]) and not result["source"]:
-#             result["source"] = "sbdb"
-#     if result["mass_kg"] is None:
-#         rho = result["density_g_cm3"]
-#         if rho is None:
-#             rho = TAXO_RHO.get((result.get("taxonomy") or "").upper())
-#         est = estimate_mass_from_diameter_density(result.get("diameter_km"), rho)
-#         if est is not None:
-#             result["mass_kg"] = est
-#             result["note"] = "estimated from diameter and density"
-#             if result["source"] is None:
-#                 result["source"] = "estimate"
-
-#     # só cacheia se houver algo útil
-#     if any([result.get("mass_kg"), result.get("density_g_cm3"), result.get("diameter_km")]):
-#         _enrich_cache_set(ck, result)
-#     return result
 
 def enrich_by_label(label: str, neo_context: dict = None):
     ck = ("enrich", label)
@@ -824,13 +877,6 @@ def neo_hazardous(
             continue
     return {"count": len(filtered), "near_earth_objects": filtered}
 
-# @app.get("/neo/enrich/{neo_id}")
-# def neo_enrich(neo_id: str):
-#     neo = _get(f"{NASA_API}/neo/{neo_id}", {"api_key": NASA_KEY})
-#     label = neo.get("name") or neo.get("designation") or str(neo_id)
-#     data = enrich_by_label(label)
-#     return {"neo_id": neo_id, "label": label, "enrichment": data}
-
 
 @app.get("/neo/enrich/{neo_id}")
 def neo_enrich(neo_id: str):
@@ -845,3 +891,38 @@ def neo_enrich(neo_id: str):
             "detail": str(e)
         })
 
+
+@app.get("/neo/impact/{neo_id}")
+def neo_impact(
+    neo_id: str,
+    velocity_kms: float | None = Query(None, description="Velocidade no impacto (km/s). Se ausente, usa métrica do NEO ou 20."),
+    angle_deg: float = Query(45.0, ge=1.0, le=90.0, description="Ângulo de impacto em graus (90=vertical)."),
+    target: str = Query("rock", description="rock|sedimentary|crystalline|water|ice"),
+    enrich: bool = Query(True, description="Usa enrichment/estimativas anteriores como base"),
+    diameter_km: float | None = Query(None, description="Sobrescreve diâmetro do projetil (km)"),
+    density_g_cm3: float | None = Query(None, description="Sobrescreve densidade (g/cm^3)"),
+    mass_kg: float | None = Query(None, description="Sobrescreve massa (kg)")
+):
+    try:
+        neo = _get(f"{NASA_API}/neo/{neo_id}", {"api_key": NASA_KEY})
+        label = neo.get("name") or neo.get("designation") or str(neo_id)
+        enr = None
+        if enrich:
+            try:
+                enr = enrich_by_label(label, neo_context=neo)
+            except Exception as e:
+                enr = None
+                neo["enrichment_error"] = str(e)
+
+        out = estimate_impact_effects(
+            neo, enr,
+            velocity_kms=velocity_kms,
+            angle_deg=angle_deg,
+            target=target,
+            override_diameter_km=diameter_km,
+            override_density_g_cm3=density_g_cm3,
+            override_mass_kg=mass_kg
+        )
+        return {"neo_id": neo_id, "label": label, "impact": out, "enrichment": enr if enrich else None}
+    except Exception as e:
+        return JSONResponse(status_code=502, content={"error": "impact_estimate_failed", "detail": str(e)})
