@@ -5,11 +5,12 @@ Serviço **FastAPI** que expõe e enriquece dados da **NASA NeoWS** e adiciona c
 - **Filtros avançados** (varredura do `browse` com filtros server-side)
 - **Enrichment** (massa, densidade, diâmetro, taxonomia, bibcode) via **SsODNet** e **JPL SBDB**, com **estimativas automáticas**
 - **Impact** (estimativa de impacto na Terra): energia (J, kt/Mt TNT), cratera (transiente/final), profundidade
-- **(Novo)** Impacto em **oceano** com estimativa de **tsunami** (amplitude em águas profundas, amplitude costeira e *run-up*)
-- **(Novo)** Estimativa **sísmica** (*Mw*) a partir de acoplamento de energia
+  - Impacto em **oceano** com estimativa de **tsunami** (amplitude em águas profundas, amplitude costeira e *run-up*)
+  - Estimativa **sísmica** (*Mw*) a partir de acoplamento de energia
 
 > ⚠️ **Aviso**: Projeto **educacional**. As avaliações/estimativas são de 1ª ordem (screening) e **não** substituem análises oficiais.
 
+**URL BASE DO SERVIÇO: ** https://neo-api-proxy.onrender.com
 ---
 
 ## Sumário
