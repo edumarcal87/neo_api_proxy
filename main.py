@@ -235,12 +235,23 @@ def _enrich_cache_get(key):
 def _enrich_cache_set(key, data, ttl=ENRICH_TTL):
     _enrich_cache[key] = (time.time() + ttl, data)
 
+import re
 def _num(x):
+    """
+    Extrai o primeiro float de x.
+    Aceita dicts com {"value": ...}, strings com incertezas ("2.9 ± 0.5 g/cm3")
+    e notação científica. Retorna None se não achar número.
+    """
     try:
         if isinstance(x, dict):
             x = x.get("value")
-        if x is None: return None
-        return float(str(x).strip())
+        if x is None:
+            return None
+        if isinstance(x, (int, float)):
+            return float(x)
+        s = str(x)
+        m = re.search(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", s)
+        return float(m.group(0)) if m else None
     except Exception:
         return None
 
@@ -299,50 +310,169 @@ def extract_taxonomy(card: dict):
             tx = taxo.get("class") or taxo.get("type") or taxo.get("complex")
     return tx
 
+# def extract_phys_from_ssocard(card: dict):
+#     if not card: return {}
+#     p = card.get("parameters") or {}
+#     phys = p.get("physical") or {}
+#     diameter = _num(phys.get("diameter") or phys.get("equivalent_diameter"))
+#     mass = _num(phys.get("mass") or phys.get("GM"))
+#     density = _num(phys.get("density") or phys.get("rho"))
+#     taxo = extract_taxonomy(card)
+#     refs = card.get("references") or []
+#     bib = None
+#     if isinstance(refs, list) and refs:
+#         for ref in refs:
+#             if isinstance(ref, dict) and ref.get("bibcode"):
+#                 bib = ref["bibcode"]; break
+#     return {"diameter_km": diameter, "mass_kg": mass, "density_g_cm3": density, "taxonomy": taxo, "bibcode": bib}
+
+# def extract_phys_from_sbdb(phys: dict):
+#     if not phys: return {}
+#     diameter = _num(phys.get("diameter"))
+#     mass = _num(phys.get("mass") or phys.get("GM"))
+#     density = _num(phys.get("density") or phys.get("rho"))
+#     return {"diameter_km": diameter, "mass_kg": mass, "density_g_cm3": density}
+
 def extract_phys_from_ssocard(card: dict):
     if not card: return {}
     p = card.get("parameters") or {}
     phys = p.get("physical") or {}
     diameter = _num(phys.get("diameter") or phys.get("equivalent_diameter"))
-    mass = _num(phys.get("mass") or phys.get("GM"))
+    mass = _num(phys.get("mass"))
+    if mass is None and phys.get("GM") is not None:
+        mass = _mass_from_GM(phys.get("GM"))
     density = _num(phys.get("density") or phys.get("rho"))
     taxo = extract_taxonomy(card)
+    # bibcode (se existir)
     refs = card.get("references") or []
     bib = None
-    if isinstance(refs, list) and refs:
-        for ref in refs:
-            if isinstance(ref, dict) and ref.get("bibcode"):
-                bib = ref["bibcode"]; break
+    for ref in refs or []:
+        if isinstance(ref, dict) and ref.get("bibcode"):
+            bib = ref["bibcode"]; break
     return {"diameter_km": diameter, "mass_kg": mass, "density_g_cm3": density, "taxonomy": taxo, "bibcode": bib}
 
 def extract_phys_from_sbdb(phys: dict):
     if not phys: return {}
     diameter = _num(phys.get("diameter"))
-    mass = _num(phys.get("mass") or phys.get("GM"))
+    mass = _num(phys.get("mass"))
+    if mass is None and phys.get("GM") is not None:
+        mass = _mass_from_GM(phys.get("GM"))
     density = _num(phys.get("density") or phys.get("rho"))
     return {"diameter_km": diameter, "mass_kg": mass, "density_g_cm3": density}
 
-def enrich_by_label(label: str):
+G_KM3_PER_KG_S2 = 6.67430e-20  # constante gravitacional em km^3/(kg*s^2)
+
+def _mass_from_GM(gm):
+    gm_val = _num(gm)
+    if gm_val is None:
+        return None
+    return gm_val / G_KM3_PER_KG_S2  # kg
+
+def _label_variants(label: str, fallback: dict = None):
+    """
+    Gera rótulos alternativos para resolver no SsODNet/SBDB:
+    - original
+    - sem parênteses / número: "(99942) Apophis" -> "Apophis", "99942"
+    - designation, se disponível (fallback["designation"])
+    """
+    lab = (label or "").strip()
+    out = []
+    if lab: out.append(lab)
+
+    # remove parênteses e split
+    # ex "(99942) Apophis" -> ["99942", "Apophis"]
+    core = lab.replace("(", " ").replace(")", " ").strip()
+    parts = [p for p in core.replace("  ", " ").split(" ") if p]
+    if parts:
+        # nome sem número
+        no_num = " ".join([p for p in parts if not p.isdigit()])
+        if no_num and no_num not in out:
+            out.append(no_num)
+        # só número
+        only_num = next((p for p in parts if p.isdigit()), None)
+        if only_num and only_num not in out:
+            out.append(only_num)
+
+    if fallback and fallback.get("designation"):
+        des = str(fallback["designation"]).strip()
+        if des and des not in out:
+            out.append(des)
+
+    return out
+
+# def enrich_by_label(label: str):
+#     ck = ("enrich", label)
+#     cached = _enrich_cache_get(ck)
+#     if cached is not None:
+#         return cached
+
+#     result = {"source": None, "mass_kg": None, "density_g_cm3": None, "diameter_km": None, "taxonomy": None, "bibcode": None, "note": None}
+#     sid = ssod_quaero(label)
+#     if sid:
+#         card = ssod_card(sid)
+#         ssop = extract_phys_from_ssocard(card)
+#         if any([ssop.get("mass_kg"), ssop.get("density_g_cm3"), ssop.get("diameter_km")]):
+#             result.update(ssop)
+#             result["source"] = "ssodnet"
+#     if result["mass_kg"] is None or result["density_g_cm3"] is None or result["diameter_km"] is None:
+#         sbp = extract_phys_from_sbdb(sbdb_phys(label))
+#         for k, v in sbp.items():
+#             if result.get(k) is None and v is not None:
+#                 result[k] = v
+#         if any([sbp.get("mass_kg"), sbp.get("density_g_cm3"), sbp.get("diameter_km")]) and not result["source"]:
+#             result["source"] = "sbdb"
+#     if result["mass_kg"] is None:
+#         rho = result["density_g_cm3"]
+#         if rho is None:
+#             rho = TAXO_RHO.get((result.get("taxonomy") or "").upper())
+#         est = estimate_mass_from_diameter_density(result.get("diameter_km"), rho)
+#         if est is not None:
+#             result["mass_kg"] = est
+#             result["note"] = "estimated from diameter and density"
+#             if result["source"] is None:
+#                 result["source"] = "estimate"
+
+#     # só cacheia se houver algo útil
+#     if any([result.get("mass_kg"), result.get("density_g_cm3"), result.get("diameter_km")]):
+#         _enrich_cache_set(ck, result)
+#     return result
+
+def enrich_by_label(label: str, neo_context: dict = None):
     ck = ("enrich", label)
     cached = _enrich_cache_get(ck)
     if cached is not None:
         return cached
 
     result = {"source": None, "mass_kg": None, "density_g_cm3": None, "diameter_km": None, "taxonomy": None, "bibcode": None, "note": None}
-    sid = ssod_quaero(label)
-    if sid:
-        card = ssod_card(sid)
-        ssop = extract_phys_from_ssocard(card)
-        if any([ssop.get("mass_kg"), ssop.get("density_g_cm3"), ssop.get("diameter_km")]):
-            result.update(ssop)
-            result["source"] = "ssodnet"
-    if result["mass_kg"] is None or result["density_g_cm3"] is None or result["diameter_km"] is None:
-        sbp = extract_phys_from_sbdb(sbdb_phys(label))
-        for k, v in sbp.items():
-            if result.get(k) is None and v is not None:
-                result[k] = v
-        if any([sbp.get("mass_kg"), sbp.get("density_g_cm3"), sbp.get("diameter_km")]) and not result["source"]:
-            result["source"] = "sbdb"
+
+    # tente várias strings
+    tried = set()
+    for cand in _label_variants(label, neo_context or {}):
+        if cand in tried: 
+            continue
+        tried.add(cand)
+
+        # 1) SsODNet
+        sid = ssod_quaero(cand)
+        if sid:
+            card = ssod_card(sid)
+            ssop = extract_phys_from_ssocard(card)
+            if any([ssop.get("mass_kg"), ssop.get("density_g_cm3"), ssop.get("diameter_km")]):
+                result.update(ssop)
+                result["source"] = "ssodnet"
+                break  # já resolveu
+
+        # 2) SBDB
+        sbp = extract_phys_from_sbdb(sbdb_phys(cand))
+        if any([sbp.get("mass_kg"), sbp.get("density_g_cm3"), sbp.get("diameter_km")]):
+            for k, v in sbp.items():
+                if result.get(k) is None and v is not None:
+                    result[k] = v
+            if not result["source"]:
+                result["source"] = "sbdb"
+            break
+
+    # 3) Estimar se ainda faltar massa
     if result["mass_kg"] is None:
         rho = result["density_g_cm3"]
         if rho is None:
@@ -354,8 +484,10 @@ def enrich_by_label(label: str):
             if result["source"] is None:
                 result["source"] = "estimate"
 
-    _enrich_cache_set(ck, result)
+    if any([result.get("mass_kg"), result.get("density_g_cm3"), result.get("diameter_km")]):
+        _enrich_cache_set(ck, result)
     return result
+
 
 app = FastAPI(title="NeoWS Python Proxy — Advanced", version="2.0.0", docs_url="/")
 
