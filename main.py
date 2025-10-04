@@ -1081,6 +1081,44 @@ def neo_enrich(neo_id: str):
             "detail": str(e)
         })
 
+# @app.get("/neo/impact/{neo_id}")
+# def neo_impact(
+#     neo_id: str,
+#     velocity_kms: float | None = Query(None),
+#     angle_deg: float = Query(45.0, ge=1.0, le=90.0),
+#     target: str = Query("rock", description="rock|sedimentary|crystalline|water|ice"),
+#     enrich: bool = Query(True),
+#     diameter_km: float | None = Query(None),
+#     density_g_cm3: float | None = Query(None),
+#     mass_kg: float | None = Query(None),
+#     # --- NOVOS ---
+#     water_depth_m: float | None = Query(None, description="Profundidade local (m) para impactos em água; padrão=4000."),
+#     coast_depth_m: float = Query(COAST_DEFAULT_DEPTH_M, description="Profundidade média costeira (m)"),
+#     coast_r_km: str | None = Query(None, description="Lista CSV de distâncias costeiras em km (ex: 50,100,200,500)"),
+#     runup_factor: float = Query(RUNUP_FACTOR, description="Fator de run-up ≈ múltiplo da amplitude costeira"),
+#     dispersion_length_km: float = Query(DISPERSION_LENGTH_KM, description="Escala de atenuação por dispersão (km)"),
+#     seismic_coupling: float = Query(SEISMIC_COUPLING_DEFAULT, description="Fraç. de energia cinética → energia sísmica"),
+# ):
+#     ...
+#     out = estimate_impact_effects(
+#         neo, enr,
+#         velocity_kms=velocity_kms,
+#         angle_deg=angle_deg,
+#         target=target,
+#         override_diameter_km=diameter_km,
+#         override_density_g_cm3=density_g_cm3,
+#         override_mass_kg=mass_kg,
+#         water_depth_m=water_depth_m,
+#         coast_depth_m=coast_depth_m,
+#         coast_r_km_csv=coast_r_km,
+#         runup_factor=runup_factor,
+#         dispersion_length_km=dispersion_length_km,
+#         seismic_coupling=seismic_coupling
+#     )
+#     return {"neo_id": neo_id, "label": label, "impact": out, "enrichment": enr if enrich else None}
+#     except Exception as e:
+#         return JSONResponse(status_code=502, content={"error": "impact_estimate_failed", "detail": str(e)})
+
 @app.get("/neo/impact/{neo_id}")
 def neo_impact(
     neo_id: str,
@@ -1091,7 +1129,6 @@ def neo_impact(
     diameter_km: float | None = Query(None),
     density_g_cm3: float | None = Query(None),
     mass_kg: float | None = Query(None),
-    # --- NOVOS ---
     water_depth_m: float | None = Query(None, description="Profundidade local (m) para impactos em água; padrão=4000."),
     coast_depth_m: float = Query(COAST_DEFAULT_DEPTH_M, description="Profundidade média costeira (m)"),
     coast_r_km: str | None = Query(None, description="Lista CSV de distâncias costeiras em km (ex: 50,100,200,500)"),
@@ -1099,57 +1136,32 @@ def neo_impact(
     dispersion_length_km: float = Query(DISPERSION_LENGTH_KM, description="Escala de atenuação por dispersão (km)"),
     seismic_coupling: float = Query(SEISMIC_COUPLING_DEFAULT, description="Fraç. de energia cinética → energia sísmica"),
 ):
-    ...
-    out = estimate_impact_effects(
-        neo, enr,
-        velocity_kms=velocity_kms,
-        angle_deg=angle_deg,
-        target=target,
-        override_diameter_km=diameter_km,
-        override_density_g_cm3=density_g_cm3,
-        override_mass_kg=mass_kg,
-        water_depth_m=water_depth_m,
-        coast_depth_m=coast_depth_m,
-        coast_r_km_csv=coast_r_km,
-        runup_factor=runup_factor,
-        dispersion_length_km=dispersion_length_km,
-        seismic_coupling=seismic_coupling
-    )
-    return {"neo_id": neo_id, "label": label, "impact": out, "enrichment": enr if enrich else None}
+    try:
+        neo = _get(f"{NASA_API}/neo/{neo_id}", {"api_key": NASA_KEY})
+        label = neo.get("name") or neo.get("designation") or str(neo_id)
+        enr = None
+        if enrich:
+            try:
+                enr = enrich_by_label(label, neo_context=neo)
+            except Exception as e:
+                enr = None
+                neo["enrichment_error"] = str(e)
+
+        out = estimate_impact_effects(
+            neo, enr,
+            velocity_kms=velocity_kms,
+            angle_deg=angle_deg,
+            target=target,
+            override_diameter_km=diameter_km,
+            override_density_g_cm3=density_g_cm3,
+            override_mass_kg=mass_kg,
+            water_depth_m=water_depth_m,
+            coast_depth_m=coast_depth_m,
+            coast_r_km_csv=coast_r_km,
+            runup_factor=runup_factor,
+            dispersion_length_km=dispersion_length_km,
+            seismic_coupling=seismic_coupling
+        )
+        return {"neo_id": neo_id, "label": label, "impact": out, "enrichment": enr if enrich else None}
     except Exception as e:
         return JSONResponse(status_code=502, content={"error": "impact_estimate_failed", "detail": str(e)})
-
-# @app.get("/neo/impact/{neo_id}")
-# def neo_impact(
-#     neo_id: str,
-#     velocity_kms: float | None = Query(None, description="Velocidade no impacto (km/s). Se ausente, usa métrica do NEO ou 20."),
-#     angle_deg: float = Query(45.0, ge=1.0, le=90.0, description="Ângulo de impacto em graus (90=vertical)."),
-#     target: str = Query("rock", description="rock|sedimentary|crystalline|water|ice"),
-#     enrich: bool = Query(True, description="Usa enrichment/estimativas anteriores como base"),
-#     diameter_km: float | None = Query(None, description="Sobrescreve diâmetro do projetil (km)"),
-#     density_g_cm3: float | None = Query(None, description="Sobrescreve densidade (g/cm^3)"),
-#     mass_kg: float | None = Query(None, description="Sobrescreve massa (kg)")
-# ):
-#     try:
-#         neo = _get(f"{NASA_API}/neo/{neo_id}", {"api_key": NASA_KEY})
-#         label = neo.get("name") or neo.get("designation") or str(neo_id)
-#         enr = None
-#         if enrich:
-#             try:
-#                 enr = enrich_by_label(label, neo_context=neo)
-#             except Exception as e:
-#                 enr = None
-#                 neo["enrichment_error"] = str(e)
-
-#         out = estimate_impact_effects(
-#             neo, enr,
-#             velocity_kms=velocity_kms,
-#             angle_deg=angle_deg,
-#             target=target,
-#             override_diameter_km=diameter_km,
-#             override_density_g_cm3=density_g_cm3,
-#             override_mass_kg=mass_kg
-#         )
-#         return {"neo_id": neo_id, "label": label, "impact": out, "enrichment": enr if enrich else None}
-#     except Exception as e:
-#         return JSONResponse(status_code=502, content={"error": "impact_estimate_failed", "detail": str(e)})
