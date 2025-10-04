@@ -57,7 +57,7 @@ Serviço FastAPI que expõe e enriquece dados da **NASA NeoWS** com:
 | `NASA_API_KEY` | Chave da API da NASA (api.nasa.gov) | `DEMO_KEY` (limites) |
 | `CORS_ORIGINS` | Origens permitidas (separe por vírgula). Ex.: `https://SEUusuario.github.io` | `*` |
 | `CACHE_TTL` | Cache do proxy (segundos) | `300` |
-| `ENRICH_TTL` | Cache do enrichment (segundos) | `21600` (6h) |
+| `ENRICH_TTL` | Cache do enrichment (segundos) | `30` |
 | `DEFAULT_RHO_G_CM3` | Densidade padrão p/ estimativa (g/cm³) | `2.5` |
 | `DEFAULT_ALBEDO` | Albedo padrão p/ estimar D via H | `0.14` |
 
@@ -300,7 +300,7 @@ curl -s "$BASE/neo/impact/3726710?velocity_kms=25&angle_deg=30&target=sedimentar
 - **CORS**: defina `CORS_ORIGINS` para o seu domínio do **GitHub Pages** (ex.: `https://seuusuario.github.io`).
 - **Cache**:
   - proxy NeoWS: `CACHE_TTL`
-  - enrichment: `ENRICH_TTL` (alto recomendado: 6h+)
+  - enrichment: `ENRICH_TTL`
 - **Estimativas**:
   - diâmetro: NeoWS (média min/max) → H+albedo (`DEFAULT_ALBEDO`)
   - densidade: taxonomia (mapa interno) → `DEFAULT_RHO_G_CM3`
