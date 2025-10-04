@@ -3,17 +3,17 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>NEO Mitigations Demo</title>
+  <title>NEO Advanced Demo</title>
   <style>
     :root{ --bg:#0b1020; --card:#131b34; --text:#e7ecff; --muted:#9bb0ff; --accent:#7aa2ff; }
     body{ background:var(--bg); color:var(--text); font-family: ui-sans-serif, system-ui, Segoe UI, Roboto, sans-serif; margin:0; padding:24px; }
-    .wrap{ max-width: 1000px; margin: 0 auto; }
-    .row{ display:flex; gap:8px; flex-wrap:wrap; margin:8px 0 16px; }
-    input,button{ padding:10px 12px; border-radius:10px; border:1px solid #2a396b; background:#0f1833; color:var(--text); }
+    .wrap{ max-width: 1100px; margin: 0 auto; }
+    .row{ display:flex; gap:8px; flex-wrap:wrap; margin:8px 0; }
+    input,button,select{ padding:10px 12px; border-radius:10px; border:1px solid #2a396b; background:#0f1833; color:var(--text); }
     button{ cursor:pointer; }
     .card{ background:var(--card); border:1px solid #22305f; padding:16px; border-radius:16px; margin:12px 0; }
     .pill{ display:inline-block; padding:4px 10px; border-radius:999px; font-size:12px; border:1px solid #2a396b; background:#0f1833; }
-    .grid{ display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:12px; }
+    .grid{ display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:12px; }
     pre{ background:#0a0f22; padding:12px; border-radius:12px; overflow:auto; }
     .level-LOW{ color:#7ae27a; }
     .level-MODERATE{ color:#ffd166; }
@@ -23,7 +23,7 @@
 </head>
 <body>
   <div class="wrap">
-    <h1>NEO Mitigations Demo</h1>
+    <h1>NEO Advanced Demo</h1>
     <div class="card">
       <div class="row">
         <input id="api" placeholder="https://seu-servico.onrender.com" style="min-width:380px" />
@@ -33,22 +33,39 @@
     </div>
 
     <div class="card">
-      <h2>Feed + Mitigações</h2>
-      <div class="row">
-        <input id="start" placeholder="YYYY-MM-DD">
-        <input id="end" placeholder="YYYY-MM-DD (opcional)">
-        <button onclick="feed()">Buscar</button>
-      </div>
-      <div id="feedOut"></div>
-    </div>
-
-    <div class="card">
-      <h2>Detalhe + Mitigações por NEO ID</h2>
+      <h2>Detalhe + Mitigations + Enrich</h2>
       <div class="row">
         <input id="neoId" placeholder="Ex.: 3726710">
+        <label><input id="enrich" type="checkbox" checked> enrich</label>
         <button onclick="detail()">Buscar</button>
       </div>
       <div id="detailOut"></div>
+    </div>
+
+    <div class="card">
+      <h2>Enrichment direto</h2>
+      <div class="row">
+        <input id="neoId2" placeholder="Ex.: 3726710">
+        <button onclick="enrich()">/neo/enrich/{id}</button>
+      </div>
+      <div id="enrichOut"></div>
+    </div>
+
+    <div class="card">
+      <h2>Filter + (opcionais) mitigations & enrich</h2>
+      <div class="row">
+        <input id="pages" type="number" value="2" placeholder="pages">
+        <input id="size" type="number" value="30" placeholder="size">
+        <input id="limit" type="number" value="50" placeholder="limit">
+        <label><input id="mit" type="checkbox" checked> mitigations</label>
+        <label><input id="enr" type="checkbox"> enrich</label>
+        <input id="minD" type="number" step="0.01" placeholder="min_diameter_km">
+        <input id="maxM" type="number" step="1" placeholder="max_miss_km">
+        <input id="daysMax" type="number" placeholder="days_max">
+        <input id="body" placeholder="approach_body (Earth)">
+        <button onclick="runFilter()">Executar</button>
+      </div>
+      <div id="filterOut"></div>
     </div>
   </div>
 
@@ -64,86 +81,90 @@
       }catch(e){ out('Erro: ' + e); }
     }
 
+    function enrichmentCard(e){
+      if(!e) return '<em>sem enrichment</em>';
+      return `
+        <ul>
+          <li><b>Source:</b> ${e.source || 'n/a'} ${e.bibcode ? '(bibcode '+e.bibcode+')' : ''}</li>
+          <li><b>Mass (kg):</b> ${e.mass_kg ?? 'n/a'}</li>
+          <li><b>Density (g/cm³):</b> ${e.density_g_cm3 ?? 'n/a'}</li>
+          <li><b>Diameter (km):</b> ${e.diameter_km ?? 'n/a'}</li>
+          <li><b>Taxonomy:</b> ${e.taxonomy ?? 'n/a'}</li>
+          <li><b>Note:</b> ${e.note ?? ''}</li>
+        </ul>
+      `;
+    }
+
     function assessmentCard(a){
       if(!a) return '';
       const m = a.metrics || {};
       return `
-        <div class="grid">
-          <div class="card">
-            <div><span class="pill">Threat</span></div>
-            <h3 class="level-${a.threat_level}">${a.threat_level}</h3>
-            <p style="color:#9bb0ff">${a.disclaimer}</p>
-          </div>
-          <div class="card">
-            <div><span class="pill">Metrics</span></div>
-            <ul>
-              <li><b>Diameter (km):</b> ${m.diameter_km ?? 'n/a'}</li>
-              <li><b>Hazardous (NASA):</b> ${m.is_hazardous}</li>
-              <li><b>Min miss (km):</b> ${m.min_miss_km ?? 'n/a'}</li>
-              <li><b>Days to soonest:</b> ${m.days_to_soonest_approach ?? 'n/a'}</li>
-              <li><b>Soonest UTC:</b> ${m.soonest_approach_utc ?? 'n/a'}</li>
-              <li><b>Max rel vel (km/s):</b> ${m.max_rel_vel_kms ?? 'n/a'}</li>
-              <li><b>Abs mag H:</b> ${m.absolute_magnitude_h ?? 'n/a'}</li>
-            </ul>
-          </div>
-          <div class="card">
-            <div><span class="pill">Mitigations</span></div>
-            ${(a.mitigations||[]).map(m => `
-              <div style="margin:8px 0">
-                <div><b>${m.title}</b> — <span class="pill">${m.when}</span></div>
-                <div style="color:#9bb0ff">${m.rationale}</div>
-                <ul>${(m.actions||[]).map(x=>`<li>${x}</li>`).join('')}</ul>
-              </div>
-            `).join('')}
-          </div>
+        <div>
+          <div><span class="pill">Threat</span> <span class="level-${a.threat_level}"><b>${a.threat_level}</b></span></div>
+          <ul>
+            <li><b>Diameter (km):</b> ${m.diameter_km ?? 'n/a'}</li>
+            <li><b>Hazardous (NASA):</b> ${m.is_hazardous}</li>
+            <li><b>Min miss (km):</b> ${m.min_miss_km ?? 'n/a'}</li>
+            <li><b>Days to soonest:</b> ${m.days_to_soonest_approach ?? 'n/a'}</li>
+            <li><b>Max rel vel (km/s):</b> ${m.max_rel_vel_kms ?? 'n/a'}</li>
+            <li><b>Abs mag H:</b> ${m.absolute_magnitude_h ?? 'n/a'}</li>
+          </ul>
         </div>
       `;
     }
 
-    async function feed(){
-      const s = $('#start').value.trim();
-      const e = $('#end').value.trim();
-      let url = new URL(base() + '/neo/feed');
-      url.searchParams.set('start_date', s);
-      if (e) url.searchParams.set('end_date', e);
-      url.searchParams.set('mitigations', 'true');
-      try{
-        const r = await fetch(url);
-        const data = await r.json();
-        const neosByDay = data.near_earth_objects || {};
-        let html = '';
-        Object.keys(neosByDay).sort().forEach(day => {
-          html += `<h3>${day}</h3>`;
-          for(const neo of neosByDay[day]){
-            html += `<div class="card">
-              <div class="row" style="justify-content:space-between;">
-                <div><b>${neo.name}</b> <span class="pill">ID ${neo.id}</span></div>
-                <a href="${neo.nasa_jpl_url}" target="_blank">JPL</a>
-              </div>
-              ${assessmentCard(neo.assessment)}
-            </div>`;
-          }
-        });
-        $('#feedOut').innerHTML = html || '<em>sem resultados</em>';
-      }catch(err){ out('Erro: ' + err); }
+    function neoCard(neo){
+      return `
+        <div class="card">
+          <div class="row" style="justify-content:space-between;">
+            <div><b>${neo.name}</b> <span class="pill">ID ${neo.id}</span></div>
+            <a href="${neo.nasa_jpl_url}" target="_blank">JPL</a>
+          </div>
+          ${neo.assessment ? '<div>'+assessmentCard(neo.assessment)+'</div>' : ''}
+          ${neo.enrichment ? '<div class="card"><span class="pill">Enrichment</span>'+enrichmentCard(neo.enrichment)+'</div>' : ''}
+        </div>
+      `;
     }
 
     async function detail(){
       const id = $('#neoId').value.trim();
+      const enrich = $('#enrich').checked ? 'true' : 'false';
       let url = new URL(base() + '/neo/' + id);
       url.searchParams.set('mitigations', 'true');
+      url.searchParams.set('enrich', enrich);
       try{
         const r = await fetch(url);
         const neo = await r.json();
-        const card = `
-          <div class="card">
-            <div class="row" style="justify-content:space-between;">
-              <div><b>${neo.name}</b> <span class="pill">ID ${neo.id}</span></div>
-              <a href="${neo.nasa_jpl_url}" target="_blank">JPL</a>
-            </div>
-            ${assessmentCard(neo.assessment)}
-          </div>`;
+        const card = neoCard(neo);
         $('#detailOut').innerHTML = card;
+      }catch(err){ out('Erro: ' + err); }
+    }
+
+    async function enrich(){
+      const id = $('#neoId2').value.trim();
+      try{
+        const r = await fetch(base() + '/neo/enrich/' + id);
+        const js = await r.json();
+        $('#enrichOut').innerHTML = '<div class="card">'+enrichmentCard(js.enrichment)+'</div>';
+      }catch(err){ out('Erro: ' + err); }
+    }
+
+    async function runFilter(){
+      const params = new URLSearchParams();
+      params.set('pages', $('#pages').value);
+      params.set('size', $('#size').value);
+      params.set('limit', $('#limit').value);
+      params.set('mitigations', $('#mit').checked ? 'true' : 'false');
+      params.set('enrich', $('#enr').checked ? 'true' : 'false');
+      if($('#minD').value) params.set('min_diameter_km', $('#minD').value);
+      if($('#maxM').value) params.set('max_miss_km', $('#maxM').value);
+      if($('#daysMax').value) params.set('days_max', $('#daysMax').value);
+      if($('#body').value) params.set('approach_body', $('#body').value);
+      try{
+        const r = await fetch(base() + '/neo/filter?' + params.toString());
+        const data = await r.json();
+        const items = data.near_earth_objects || [];
+        $('#filterOut').innerHTML = (items.length ? items.map(neoCard).join('') : '<em>sem resultados</em>');
       }catch(err){ out('Erro: ' + err); }
     }
   </script>
