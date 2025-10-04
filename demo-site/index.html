@@ -7,9 +7,9 @@
   <style>
     :root{ --bg:#0b1020; --card:#131b34; --text:#e7ecff; --muted:#9bb0ff; --accent:#7aa2ff; }
     body{ background:var(--bg); color:var(--text); font-family: ui-sans-serif, system-ui, Segoe UI, Roboto, sans-serif; margin:0; padding:24px; }
-    .wrap{ max-width: 1100px; margin: 0 auto; }
-    .row{ display:flex; gap:8px; flex-wrap:wrap; margin:8px 0; }
-    input,button,select{ padding:10px 12px; border-radius:10px; border:1px solid #2a396b; background:#0f1833; color:var(--text); }
+    .wrap{ max-width: 1200px; margin: 0 auto; }
+    .row{ display:flex; gap:8px; flex-wrap:wrap; margin:8px 0; align-items:center; }
+    input,button,select,textarea{ padding:10px 12px; border-radius:10px; border:1px solid #2a396b; background:#0f1833; color:var(--text); }
     button{ cursor:pointer; }
     .card{ background:var(--card); border:1px solid #22305f; padding:16px; border-radius:16px; margin:12px 0; }
     .pill{ display:inline-block; padding:4px 10px; border-radius:999px; font-size:12px; border:1px solid #2a396b; background:#0f1833; }
@@ -19,30 +19,29 @@
     .level-MODERATE{ color:#ffd166; }
     .level-HIGH{ color:#ff7b7b; }
     .level-CRITICAL{ color:#ff4d4d; font-weight:700; }
+    .section-title{ margin-top:0; }
+    .small{ font-size:12px; color:#b9c3ff; }
+    .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    table{ width:100%; border-collapse:collapse; }
+    th, td{ padding:8px; border-bottom:1px solid #22305f; text-align:left; }
   </style>
 </head>
 <body>
   <div class="wrap">
     <h1>NEO Advanced Demo</h1>
+
     <div class="card">
+      <h2 class="section-title">Conexão</h2>
       <div class="row">
-        <input id="api" placeholder="https://neo-api-proxy.onrender.com" style="min-width:380px" />
+        <input id="api" placeholder="https://seu-servico.onrender.com" style="min-width:380px" />
         <button onclick="ping()">/health</button>
+        <span id="status" class="small"></span>
       </div>
-      <pre id="log">resultado aparece aqui…</pre>
+      <pre id="log" class="mono">resultado aparece aqui…</pre>
     </div>
 
-    <!-- <div class="card">
-      <h2>Detalhe + Mitigations + Enrich</h2>
-      <div class="row">
-        <input id="neoId" placeholder="Ex.: 3726710">
-        <label><input id="enrich" type="checkbox" checked> enrich</label>
-        <button onclick="detail()">Buscar</button>
-      </div>
-      <div id="detailOut"></div>
-    </div> -->
     <div class="card">
-      <h2>Detalhe + Mitigations + Enrich + Impact</h2>
+      <h2 class="section-title">Detalhe + Mitigations + Enrich + Impact</h2>
       <div class="row">
         <input id="neoId" placeholder="Ex.: 3726710">
         <label><input id="enrich" type="checkbox" checked> enrich</label>
@@ -50,7 +49,7 @@
         <button onclick="detail()">Buscar</button>
       </div>
 
-      <!-- parâmetros de impacto (opcionais) -->
+      <!-- parâmetros de IMPACT (opcionais) -->
       <div class="row" id="impactParams" style="display:none">
         <input id="vel" type="number" step="0.1" placeholder="velocity_kms (ex: 20)">
         <input id="ang" type="number" step="0.1" placeholder="angle_deg (1–90, padrão 45)">
@@ -66,12 +65,21 @@
         <input id="omass" type="number" step="1" placeholder="mass_kg (override)">
       </div>
 
+      <!-- parâmetros de OCEANO/TSUNAMI e SÍSMICO -->
+      <div class="row" id="oceanParams" style="display:none">
+        <input id="water_depth_m" type="number" step="1" placeholder="water_depth_m (ex: 4000)">
+        <input id="coast_depth_m" type="number" step="1" placeholder="coast_depth_m (ex: 50)">
+        <input id="coast_r_km" placeholder="coast_r_km CSV (ex: 50,100,200)">
+        <input id="runup_factor" type="number" step="0.1" placeholder="runup_factor (ex: 2.0)">
+        <input id="dispersion_length_km" type="number" step="1" placeholder="dispersion_length_km (ex: 1000)">
+        <input id="seismic_coupling" type="number" step="0.0001" placeholder="seismic_coupling (ex: 0.0001)">
+      </div>
+
       <div id="detailOut"></div>
     </div>
 
-
     <div class="card">
-      <h2>Enrichment direto</h2>
+      <h2 class="section-title">Enrichment direto</h2>
       <div class="row">
         <input id="neoId2" placeholder="Ex.: 3726710">
         <button onclick="enrich()">/neo/enrich/{id}</button>
@@ -80,7 +88,7 @@
     </div>
 
     <div class="card">
-      <h2>Filter + (opcionais) mitigations & enrich</h2>
+      <h2 class="section-title">Filter (com opcional mitigations & enrich)</h2>
       <div class="row">
         <input id="pages" type="number" value="2" placeholder="pages">
         <input id="size" type="number" value="30" placeholder="size">
@@ -101,28 +109,41 @@
     const $ = s => document.querySelector(s);
     const out = (x) => $('#log').textContent = typeof x === 'string' ? x : JSON.stringify(x, null, 2);
     const base = () => $('#api').value.trim();
+    const setStatus = (t) => $('#status').textContent = t || '';
+
+    document.querySelector('#impact').addEventListener('change', (e)=>{
+      const show = e.target.checked;
+      document.querySelector('#impactParams').style.display = show ? 'flex' : 'none';
+      document.querySelector('#oceanParams').style.display = show ? 'flex' : 'none';
+    });
 
     async function ping(){
+      setStatus('');
       try{
         const r = await fetch(base() + '/health');
-        out(await r.json());
-      }catch(e){ out('Erro: ' + e); }
+        const data = await r.json();
+        out(data);
+        setStatus('online ✔');
+      }catch(e){
+        out('Erro: ' + e);
+        setStatus('offline ✖');
+      }
     }
 
+    function fmt(x, d=2){ return (x===null||x===undefined) ? 'n/a' : Number(x).toFixed(d); }
     function enrichmentCard(e){
       if(!e) return '<em>sem enrichment</em>';
       return `
         <ul>
           <li><b>Source:</b> ${e.source || 'n/a'} ${e.bibcode ? '(bibcode '+e.bibcode+')' : ''}</li>
-          <li><b>Mass (kg):</b> ${e.mass_kg ?? 'n/a'}</li>
-          <li><b>Density (g/cm³):</b> ${e.density_g_cm3 ?? 'n/a'}</li>
-          <li><b>Diameter (km):</b> ${e.diameter_km ?? 'n/a'}</li>
+          <li><b>Mass (kg):</b> ${fmt(e.mass_kg, 0)}</li>
+          <li><b>Density (g/cm³):</b> ${fmt(e.density_g_cm3)}</li>
+          <li><b>Diameter (km):</b> ${fmt(e.diameter_km)}</li>
           <li><b>Taxonomy:</b> ${e.taxonomy ?? 'n/a'}</li>
           <li><b>Note:</b> ${e.note ?? ''}</li>
         </ul>
       `;
     }
-
     function assessmentCard(a){
       if(!a) return '';
       const m = a.metrics || {};
@@ -130,57 +151,119 @@
         <div>
           <div><span class="pill">Threat</span> <span class="level-${a.threat_level}"><b>${a.threat_level}</b></span></div>
           <ul>
-            <li><b>Diameter (km):</b> ${m.diameter_km ?? 'n/a'}</li>
+            <li><b>Diameter (km):</b> ${fmt(m.diameter_km)}</li>
             <li><b>Hazardous (NASA):</b> ${m.is_hazardous}</li>
-            <li><b>Min miss (km):</b> ${m.min_miss_km ?? 'n/a'}</li>
-            <li><b>Days to soonest:</b> ${m.days_to_soonest_approach ?? 'n/a'}</li>
-            <li><b>Max rel vel (km/s):</b> ${m.max_rel_vel_kms ?? 'n/a'}</li>
-            <li><b>Abs mag H:</b> ${m.absolute_magnitude_h ?? 'n/a'}</li>
+            <li><b>Min miss (km):</b> ${fmt(m.min_miss_km)}</li>
+            <li><b>Days to soonest:</b> ${fmt(m.days_to_soonest_approach)}</li>
+            <li><b>Max rel vel (km/s):</b> ${fmt(m.max_rel_vel_kms)}</li>
+            <li><b>Abs mag H:</b> ${fmt(m.absolute_magnitude_h)}</li>
           </ul>
         </div>
       `;
     }
-
-    /*function neoCard(neo){
-      return `
+    function oceanCard(o){
+      if(!o) return '<em>sem dados oceânicos</em>';
+      const far = o.far_field || [];
+      const rows = far.map(p => \`
+        <tr>
+          <td>\${fmt(p.distance_km,0)}</td>
+          <td>\${fmt(p.deep_water_amp_m)}</td>
+          <td>\${fmt(p.coastal_amp_m)}</td>
+          <td>\${fmt(p.runup_m)}</td>
+        </tr>\`).join('');
+      return \`
+        <div class="card">
+          <b>Ocean/Tsunami</b>
+          <ul>
+            <li><b>Initial amp (m):</b> \${fmt(o.initial_amp_m)}</li>
+            <li><b>Near-field radius (km):</b> \${fmt(o.nearfield_radius_km)}</li>
+          </ul>
+          <div class="small">Far-field (exemplos de distâncias costeiras)</div>
+          <div style="overflow:auto">
+            <table class="mono">
+              <thead><tr><th>Dist (km)</th><th>Deep (m)</th><th>Coastal (m)</th><th>Run-up (m)</th></tr></thead>
+              <tbody>\${rows}</tbody>
+            </table>
+          </div>
+        </div>
+      \`;
+    }
+    function seismicCard(s){
+      if(!s) return '<em>sem dados sísmicos</em>';
+      return \`
+        <div class="card">
+          <b>Seismic</b>
+          <ul>
+            <li><b>Mw:</b> \${fmt(s.Mw,2)}</li>
+            <li><b>E_s (J):</b> \${fmt(s.E_s_j,0)}</li>
+            <li><b>Coupling:</b> \${fmt(s.coupling,6)}</li>
+          </ul>
+        </div>
+      \`;
+    }
+    function impactCard(imp){
+      if(!imp) return '<em>sem impacto</em>';
+      const r = imp.inputs_resolved || {};
+      const e = imp.energy || {};
+      const c = imp.crater || {};
+      return \`
+        <div class="card">
+          <div><span class="pill">Impact</span></div>
+          <div class="grid">
+            <div class="card">
+              <b>Inputs</b>
+              <ul>
+                <li><b>Diameter (km):</b> \${fmt(r.diameter_km)}</li>
+                <li><b>Density (g/cm³):</b> \${fmt(r.density_g_cm3)}</li>
+                <li><b>Mass (kg):</b> \${fmt(r.mass_kg, 0)}</li>
+                <li><b>Velocity (km/s):</b> \${fmt(r.velocity_kms)}</li>
+                <li><b>Angle (deg):</b> \${fmt(r.angle_deg)}</li>
+                <li><b>Target:</b> \${r.target || 'n/a'}</li>
+              </ul>
+            </div>
+            <div class="card">
+              <b>Energy</b>
+              <ul>
+                <li><b>Kinetic (J):</b> \${fmt(e.kinetic_j, 0)}</li>
+                <li><b>TNT (kt):</b> \${fmt(e.tnt_kt)}</li>
+                <li><b>TNT (Mt):</b> \${fmt(e.tnt_Mt, 3)}</li>
+                <li><b>Momentum (N·s):</b> \${fmt(e.momentum_Ns, 0)}</li>
+              </ul>
+            </div>
+            <div class="card">
+              <b>Crater</b>
+              <ul>
+                <li><b>Transient D (km):</b> \${fmt(c.transient_diameter_km)}</li>
+                <li><b>Final D (km):</b> \${fmt(c.final_diameter_km)}</li>
+                <li><b>Depth (km):</b> \${fmt(c.depth_km)}</li>
+                <li><b>Type:</b> \${c.type || 'n/a'}</li>
+                <li><b>Final/Impactor ratio:</b> \${fmt(c.ratio_final_to_impactor)}</li>
+              </ul>
+            </div>
+          </div>
+          <div class="grid">
+            \${oceanCard(imp.ocean)}
+            \${seismicCard(imp.seismic)}
+          </div>
+        </div>
+      \`;
+    }
+    function neoCard(neo){
+      return \`
         <div class="card">
           <div class="row" style="justify-content:space-between;">
-            <div><b>${neo.name}</b> <span class="pill">ID ${neo.id}</span></div>
-            <a href="${neo.nasa_jpl_url}" target="_blank">JPL</a>
+            <div><b>\${neo.name}</b> <span class="pill">ID \${neo.id}</span></div>
+            <a href="\${neo.nasa_jpl_url}" target="_blank">JPL</a>
           </div>
-          ${neo.assessment ? '<div>'+assessmentCard(neo.assessment)+'</div>' : ''}
-          ${neo.enrichment ? '<div class="card"><span class="pill">Enrichment</span>'+enrichmentCard(neo.enrichment)+'</div>' : ''}
+          \${neo.assessment ? '<div class="card">'+assessmentCard(neo.assessment)+'</div>' : ''}
+          \${neo.enrichment ? '<div class="card"><span class="pill">Enrichment</span>'+enrichmentCard(neo.enrichment)+'</div>' : ''}
+          \${neo.impact ? impactCard(neo.impact) : ''}
+          \${neo.enrichment_error ? '<div class="small">enrichment_error: '+neo.enrichment_error+'</div>' : ''}
+          \${neo.impact_error ? '<div class="small">impact_error: '+neo.impact_error+'</div>' : ''}
         </div>
-      `;
-    }*/
-   function neoCard(neo){
-      return `
-        <div class="card">
-          <div class="row" style="justify-content:space-between;">
-            <div><b>${neo.name}</b> <span class="pill">ID ${neo.id}</span></div>
-            <a href="${neo.nasa_jpl_url}" target="_blank">JPL</a>
-          </div>
-          ${neo.assessment ? '<div class="card">'+assessmentCard(neo.assessment)+'</div>' : ''}
-          ${neo.enrichment ? '<div class="card"><span class="pill">Enrichment</span>'+enrichmentCard(neo.enrichment)+'</div>' : ''}
-          ${neo.impact ? impactCard(neo.impact) : ''}
-        </div>
-      `;
+      \`;
     }
 
-
-    // async function detail(){
-    //   const id = $('#neoId').value.trim();
-    //   const enrich = $('#enrich').checked ? 'true' : 'false';
-    //   let url = new URL(base() + '/neo/' + id);
-    //   url.searchParams.set('mitigations', 'true');
-    //   url.searchParams.set('enrich', enrich);
-    //   try{
-    //     const r = await fetch(url);
-    //     const neo = await r.json();
-    //     const card = neoCard(neo);
-    //     $('#detailOut').innerHTML = card;
-    //   }catch(err){ out('Erro: ' + err); }
-    // }
     async function detail(){
       const id = $('#neoId').value.trim();
       const enrich = $('#enrich').checked ? 'true' : 'false';
@@ -197,12 +280,25 @@
         const odiam = $('#odiam').value.trim();
         const odens = $('#odens').value.trim();
         const omass = $('#omass').value.trim();
+        const wdep = $('#water_depth_m').value.trim();
+        const cdep = $('#coast_depth_m').value.trim();
+        const crkm = $('#coast_r_km').value.trim();
+        const runup = $('#runup_factor').value.trim();
+        const disp = $('#dispersion_length_km').value.trim();
+        const scoup = $('#seismic_coupling').value.trim();
+
         if(vel) url.searchParams.set('velocity_kms', vel);
         if(ang) url.searchParams.set('angle_deg', ang);
         if(tgt) url.searchParams.set('target', tgt);
         if(odiam) url.searchParams.set('diameter_km', odiam);
         if(odens) url.searchParams.set('density_g_cm3', odens);
         if(omass) url.searchParams.set('mass_kg', omass);
+        if(wdep) url.searchParams.set('water_depth_m', wdep);
+        if(cdep) url.searchParams.set('coast_depth_m', cdep);
+        if(crkm) url.searchParams.set('coast_r_km', crkm);
+        if(runup) url.searchParams.set('runup_factor', runup);
+        if(disp) url.searchParams.set('dispersion_length_km', disp);
+        if(scoup) url.searchParams.set('seismic_coupling', scoup);
       }
 
       try{
@@ -212,7 +308,6 @@
         $('#detailOut').innerHTML = card;
       }catch(err){ out('Erro: ' + err); }
     }
-
 
     async function enrich(){
       const id = $('#neoId2').value.trim();
@@ -241,58 +336,6 @@
         $('#filterOut').innerHTML = (items.length ? items.map(neoCard).join('') : '<em>sem resultados</em>');
       }catch(err){ out('Erro: ' + err); }
     }
-
-    document.querySelector('#impact').addEventListener('change', (e)=>{
-      document.querySelector('#impactParams').style.display = e.target.checked ? 'flex' : 'none';
-    });
-
-    function fmt(x, d=2){ return (x===null||x===undefined) ? 'n/a' : Number(x).toFixed(d); }
-
-    function impactCard(imp){
-      if(!imp) return '<em>sem impacto</em>';
-      const r = imp.inputs_resolved || {};
-      const e = imp.energy || {};
-      const c = imp.crater || {};
-      return `
-        <div class="card">
-          <div><span class="pill">Impact</span></div>
-          <div class="grid">
-            <div class="card">
-              <b>Inputs</b>
-              <ul>
-                <li><b>Diameter (km):</b> ${fmt(r.diameter_km)}</li>
-                <li><b>Density (g/cm³):</b> ${fmt(r.density_g_cm3)}</li>
-                <li><b>Mass (kg):</b> ${fmt(r.mass_kg, 0)}</li>
-                <li><b>Velocity (km/s):</b> ${fmt(r.velocity_kms)}</li>
-                <li><b>Angle (deg):</b> ${fmt(r.angle_deg)}</li>
-                <li><b>Target:</b> ${r.target || 'n/a'}</li>
-              </ul>
-            </div>
-            <div class="card">
-              <b>Energy</b>
-              <ul>
-                <li><b>Kinetic (J):</b> ${fmt(e.kinetic_j, 0)}</li>
-                <li><b>TNT (kt):</b> ${fmt(e.tnt_kt)}</li>
-                <li><b>TNT (Mt):</b> ${fmt(e.tnt_Mt, 3)}</li>
-                <li><b>Momentum (N·s):</b> ${fmt(e.momentum_Ns, 0)}</li>
-              </ul>
-            </div>
-            <div class="card">
-              <b>Crater</b>
-              <ul>
-                <li><b>Transient D (km):</b> ${fmt(c.transient_diameter_km)}</li>
-                <li><b>Final D (km):</b> ${fmt(c.final_diameter_km)}</li>
-                <li><b>Depth (km):</b> ${fmt(c.depth_km)}</li>
-                <li><b>Type:</b> ${c.type || 'n/a'}</li>
-                <li><b>Final/Impactor ratio:</b> ${fmt(c.ratio_final_to_impactor)}</li>
-              </ul>
-            </div>
-          </div>
-        </div>
-      `;
-    }
-
-
   </script>
 </body>
 </html>
